@@ -1,0 +1,14 @@
+# Base theme. The finer Steam styling lives in assets/styles.css.
+[theme]
+base = "dark"
+primaryColor = "#66c0f4"
+backgroundColor = "#1b2838"
+secondaryBackgroundColor = "#2a475e"
+textColor = "#c7d5e0"
+font = "sans serif"
+
+[server]
+runOnSave = true
+
+[browser]
+gatherUsageStats = false

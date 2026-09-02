@@ -1,0 +1,370 @@
+/* ==========================================================================
+   Steam-store skin for Streamlit.
+   Palette mirrors utils/constants.py:STEAM -- change both together.
+   ========================================================================== */
+
+:root {
+  --steam-bg-dark: #171a21;
+  --steam-bg: #1b2838;
+  --steam-panel: #16202d;
+  --steam-panel-alt: #2a475e;
+  --steam-blue: #66c0f4;
+  --steam-blue-dim: #417a9b;
+  --steam-text: #c7d5e0;
+  --steam-muted: #8f98a0;
+  --steam-green: #a4d007;
+  --steam-green-dark: #588a1b;
+  --steam-gold: #b9a074;
+  --steam-rust: #a34c25;
+}
+
+/* ---------- page shell ---------------------------------------------------- */
+
+html, body, .stApp {
+  font-family: "Motiva Sans", Arial, Helvetica, sans-serif;
+}
+
+/* Never touch the icon fonts -- overriding them renders the ligature name
+   ("keyboard_arrow_right") as literal text in expanders and select arrows. */
+[data-testid="stIconMaterial"],
+span[class*="material-symbols"],
+span[class*="material-icons"] {
+  font-family: "Material Symbols Rounded", "Material Icons" !important;
+}
+
+.stApp {
+  background:
+    radial-gradient(1200px 600px at 50% -10%, #2a475e 0%, rgba(42, 71, 94, 0) 60%),
+    linear-gradient(to bottom, var(--steam-bg) 0%, var(--steam-bg-dark) 100%);
+  background-attachment: fixed;
+  color: var(--steam-text);
+}
+
+[data-testid="stHeader"] {
+  background: transparent;
+}
+
+.block-container {
+  padding-top: 0.9rem;
+  padding-bottom: 0.5rem;
+  max-width: 1600px;
+}
+
+h1, h2, h3, h4 {
+  color: #ffffff;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+
+a { color: var(--steam-blue); }
+
+/* ---------- top nav bar --------------------------------------------------- */
+
+.steam-nav {
+  background: var(--steam-bg-dark);
+  border-radius: 3px;
+  padding: 9px 20px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.45);
+}
+
+.steam-nav .brand {
+  font-size: 22px;
+  color: #ffffff;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.steam-nav .brand span { color: var(--steam-blue); }
+
+.steam-nav .brand small {
+  display: block;
+  font-size: 11px;
+  color: var(--steam-muted);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  margin-top: 3px;
+}
+
+.steam-nav .nav-links {
+  color: var(--steam-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  display: flex;
+  gap: 18px;
+}
+
+.steam-nav .nav-links .active { color: var(--steam-blue); }
+
+/* ---------- cards --------------------------------------------------------- */
+
+.steam-card {
+  background: linear-gradient(135deg, rgba(42, 71, 94, 0.55) 0%, rgba(22, 32, 45, 0.85) 100%);
+  border: 1px solid rgba(102, 192, 244, 0.12);
+  border-radius: 3px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+}
+
+/* `st.container(border=True)` gets the same card treatment, since raw <div>
+   wrappers cannot contain Streamlit widgets. */
+[data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"]) {
+  border-radius: 3px;
+}
+
+.stVerticalBlockBorderWrapper[data-testid="stVerticalBlockBorderWrapper"] > div,
+[data-testid="stVerticalBlockBorderWrapper"] {
+  border-color: rgba(102, 192, 244, 0.14) !important;
+}
+
+.card-title {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--steam-muted);
+  margin-bottom: 6px;
+}
+
+/* metric tiles rendered as raw HTML in components/results.py */
+.metric-tile {
+  background: linear-gradient(135deg, rgba(42, 71, 94, 0.6) 0%, rgba(22, 32, 45, 0.9) 100%);
+  border: 1px solid rgba(102, 192, 244, 0.14);
+  border-left: 3px solid var(--steam-blue);
+  border-radius: 3px;
+  padding: 9px 12px;
+  height: 100%;
+  margin-bottom: 7px;
+}
+
+.metric-tile .label {
+  font-size: 9px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--steam-muted);
+}
+
+.metric-tile .value {
+  font-size: 23px;
+  line-height: 1.1;
+  color: #ffffff;
+  margin: 3px 0 1px;
+}
+
+/* long string values (e.g. the estimated_owners bucket) wrap at full size */
+.metric-tile .value.compact {
+  font-size: 16px;
+  white-space: nowrap;
+}
+
+.metric-tile .sub {
+  font-size: 10px;
+  color: var(--steam-blue);
+}
+
+.metric-tile.is-green { border-left-color: var(--steam-green); }
+.metric-tile.is-green .sub { color: var(--steam-green); }
+.metric-tile.is-gold { border-left-color: var(--steam-gold); }
+.metric-tile.is-gold .sub { color: var(--steam-gold); }
+
+/* ---------- review sentiment badge ---------------------------------------- */
+
+.sentiment-row {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.sentiment-badge {
+  font-size: 20px;
+  font-weight: 400;
+}
+
+.sentiment-meta {
+  font-size: 12px;
+  color: var(--steam-muted);
+}
+
+.score-bar {
+  height: 6px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.score-bar > div { height: 100%; }
+
+/* store-style tag chips */
+.capsule {
+  display: inline-block;
+  background: rgba(103, 193, 245, 0.14);
+  color: var(--steam-blue);
+  border-radius: 2px;
+  padding: 3px 9px;
+  margin: 0 5px 5px 0;
+  font-size: 12px;
+}
+
+.placeholder-note {
+  border-left: 3px solid var(--steam-gold);
+  background: rgba(185, 160, 116, 0.09);
+  color: var(--steam-text);
+  padding: 12px 16px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+/* ---------- sidebar ------------------------------------------------------- */
+
+[data-testid="stSidebar"] {
+  background: var(--steam-bg-dark);
+  border-right: 1px solid rgba(102, 192, 244, 0.12);
+}
+
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 {
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--steam-muted);
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 7px;
+  vertical-align: middle;
+}
+
+/* ---------- buttons ------------------------------------------------------- */
+
+.stButton button,
+.stFormSubmitButton button,
+.stDownloadButton button {
+  background: linear-gradient(to right, #47bfff 0%, #1a44c2 60%);
+  color: #ffffff;
+  border: none;
+  border-radius: 2px;
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  padding: 6px 18px;
+  transition: filter 0.15s ease;
+}
+
+.stButton button:hover,
+.stFormSubmitButton button:hover,
+.stDownloadButton button:hover {
+  filter: brightness(1.18);
+  color: #ffffff;
+}
+
+/* the primary call to action gets Steam's green "install" gradient */
+.stFormSubmitButton button[kind="primaryFormSubmit"],
+.stButton button[kind="primary"] {
+  background: linear-gradient(to right, #75b022 5%, #588a1b 95%);
+  width: 100%;
+  font-size: 14px;
+  padding: 8px 20px;
+  margin-top: 4px;
+}
+
+/* ---------- inputs -------------------------------------------------------- */
+
+[data-baseweb="input"],
+[data-baseweb="select"] > div,
+[data-baseweb="textarea"] {
+  background: rgba(0, 0, 0, 0.28) !important;
+  border: 1px solid rgba(102, 192, 244, 0.16) !important;
+  border-radius: 2px !important;
+  color: var(--steam-text) !important;
+}
+
+[data-baseweb="tag"] {
+  background: var(--steam-blue-dim) !important;
+  border-radius: 2px !important;
+  color: #ffffff !important;
+}
+
+label, .stMarkdown p {
+  color: var(--steam-text);
+}
+
+/* ---------- tabs ---------------------------------------------------------- */
+
+/* ---------- fit-on-one-screen compaction ---------------------------------
+   The page must not scroll, so the default Streamlit vertical rhythm (1rem
+   gaps, 2.5rem labels, 40px controls) is tightened throughout. Everything
+   below is spacing only -- no colour changes.
+   ------------------------------------------------------------------------- */
+
+/* gap between stacked elements, and between columns */
+[data-testid="stVerticalBlock"] { gap: 0.45rem; }
+[data-testid="stHorizontalBlock"] { gap: 0.5rem; }
+[data-testid="stElementContainer"] { margin-bottom: 0; }
+
+/* widget labels */
+[data-testid="stWidgetLabel"] { margin-bottom: 1px; min-height: 0; }
+[data-testid="stWidgetLabel"] p {
+  font-size: 11px;
+  line-height: 1.25;
+  margin-bottom: 0;
+  color: var(--steam-muted);
+}
+
+/* controls */
+[data-baseweb="input"], [data-baseweb="select"] > div {
+  min-height: 32px !important;
+}
+[data-baseweb="base-input"] input, [data-baseweb="select"] input {
+  font-size: 13px !important;
+  padding-top: 3px !important;
+  padding-bottom: 3px !important;
+}
+[data-baseweb="tag"] {
+  height: 21px !important;
+  font-size: 11px !important;
+  margin: 1px 2px 1px 0 !important;
+}
+
+/* Reclaim ~28px of chip width per control: every chip already carries its own
+   "Remove X" button, so the global clear is redundant and its width is what
+   forces "Windows" to truncate to "Wind...". */
+[data-testid="stMultiSelect"] button[aria-label="Clear all"] {
+  display: none;
+}
+
+/* cards */
+[data-testid="stVerticalBlockBorderWrapper"] > div > [data-testid="stVerticalBlock"] {
+  padding: 2px 0;
+}
+
+/* needs real clearance -- the next row's widget label sits directly under it
+   and collides once the vertical gap is tightened */
+.card-title {
+  margin-bottom: 9px;
+  line-height: 1.3;
+}
+
+/* checkbox row */
+[data-testid="stCheckbox"] { margin-top: 2px; }
+[data-testid="stCheckbox"] label span { font-size: 12px; }
+
+/* the chart caption */
+[data-testid="stCaptionContainer"] p { font-size: 11px; margin-bottom: 0; }
+
+/* ---------- misc ---------------------------------------------------------- */
+
+hr {
+  border-color: rgba(102, 192, 244, 0.14);
+}
+
+/* Streamlit's own footer/menu -- hidden so the page reads as a product */
+#MainMenu, footer { visibility: hidden; }

@@ -5,38 +5,28 @@ from __future__ import annotations
 from .constants import SENTIMENT_COLORS
 
 
-def review_summary(positive_ratio: float, total_reviews: int) -> tuple[str, str]:
-    """Map a positive ratio + review count onto Steam's review summary label.
+def review_label(pct: float) -> tuple[str, str]:
+    """Map a predicted positive percentage onto Steam's review summary label.
 
-    Reproduces the store's published thresholds: the extreme labels
-    ("Overwhelmingly", "Very") need a minimum review volume, otherwise the
-    plain label is used.
+    The store also gates its extreme labels ("Overwhelmingly", "Very") on review
+    volume, but review *count* is not one of the trained targets -- only
+    `positive_review_percentage` is. So the bands below are applied on the
+    percentage alone, and the volume-gated wording is not claimed.
 
     Returns (label, hex_colour).
     """
-    pct = positive_ratio * 100 if positive_ratio <= 1 else positive_ratio
-
-    if total_reviews < 10:
-        return "Need more reviews", SENTIMENT_COLORS["mixed"]
-
-    if pct >= 95 and total_reviews >= 500:
+    if pct >= 95:
         label, tone = "Overwhelmingly Positive", "positive"
-    elif pct >= 80 and total_reviews >= 50:
-        label, tone = "Very Positive", "positive"
     elif pct >= 80:
-        label, tone = "Positive", "positive"
+        label, tone = "Very Positive", "positive"
     elif pct >= 70:
         label, tone = "Mostly Positive", "positive"
     elif pct >= 40:
         label, tone = "Mixed", "mixed"
     elif pct >= 20:
         label, tone = "Mostly Negative", "negative"
-    elif total_reviews >= 500:
-        label, tone = "Overwhelmingly Negative", "negative"
-    elif total_reviews >= 50:
-        label, tone = "Very Negative", "negative"
     else:
-        label, tone = "Negative", "negative"
+        label, tone = "Overwhelmingly Negative", "negative"
 
     return label, SENTIMENT_COLORS[tone]
 

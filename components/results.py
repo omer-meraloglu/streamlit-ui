@@ -1,6 +1,13 @@
 """Result tiles, review badge and driver chart.
 
-Tiles map to the target columns of `datascientiststeamproject.kaggle.Steam`.
+Every value shown is a model output or is derived from one:
+
+  estimated_owners   model_owners  (classifier -> bucket mid-point)
+  review score       model_review  (regressor, positive_review_percentage)
+  suggested price    model_price   (regressor on log1p(price), inverted)
+  confidence         model_owners  predict_proba on the chosen bucket
+  revenue            derived: predicted owners x the price you entered
+  drivers            SHAP values from explainer_owners
 """
 
 from __future__ import annotations
@@ -9,9 +16,10 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from demo import GameSpec, PreviewNumbers
+from demo import GameSpec
 from utils.constants import STEAM
-from utils.formatting import compact_number, money, price_label, review_summary
+from utils.formatting import compact_number, money, price_label, review_label
+from utils.model_backend import Prediction
 
 
 def _tile(
@@ -35,18 +43,17 @@ def render_empty_state() -> None:
         "Configure a store page on the left, then hit "
         "<b>Predict performance</b>.</div>"
         '<div style="font-size:13px;color:#8f98a0;margin-top:8px">'
-        "Sample values only — estimated_owners, positive / negative, peak_ccu, "
-        "recommendations and metacritic_score.</div></div>",
+        "Scored by the trained models — estimated_owners, "
+        "positive_review_percentage and price.</div></div>",
         unsafe_allow_html=True,
     )
 
 
 def render_results(
-    numbers: PreviewNumbers, spec: GameSpec, settings: dict
+    prediction: Prediction, spec: GameSpec, settings: dict
 ) -> None:
-    label, color = review_summary(numbers.positive_ratio, numbers.total_reviews)
-    pct = numbers.positive_ratio * 100
-    effective_price = 0.0 if spec.price_status != "Paid" else spec.price
+    label, color = review_label(prediction.review_pct)
+    pct = prediction.review_pct
 
     # ---- headline: the game as a store capsule ---------------------------
     tags_html = "".join(
@@ -60,7 +67,7 @@ def render_results(
         f'<div class="steam-card">'
         f'<div style="font-size:22px;color:#fff">{spec.name}</div>'
         f'<div style="font-size:13px;color:#8f98a0;margin:4px 0 10px">'
-        f"{price_label(effective_price)} &nbsp;&middot;&nbsp; "
+        f"{price_label(prediction.entered_price)} &nbsp;&middot;&nbsp; "
         f"{spec.release_date:%d %b %Y} &nbsp;&middot;&nbsp; "
         f'{", ".join(spec.platforms)} &nbsp;&middot;&nbsp; {byline}</div>'
         f"{tags_html}</div>",
@@ -68,17 +75,21 @@ def render_results(
     )
 
     # ---- metric tiles ------------------------------------------------------
-    owners_sub = (
-        "bucket · owners" if settings["show_intervals"] else "estimated_owners"
-    )
+    if settings["show_intervals"] and prediction.owners_high > prediction.owners_low:
+        owners_sub = (
+            f"{compact_number(prediction.owners_low)}–"
+            f"{compact_number(prediction.owners_high)} · 80% of mass"
+        )
+    else:
+        owners_sub = "bucket mid-point"
 
-    # 3 per row x 2 rows, so the six targets fit without scrolling.
+    # 3 per row x 2 rows, so the six values fit without scrolling.
     top = st.columns(3)
     with top[0]:
         st.markdown(
             _tile(
                 "estimated_owners",
-                numbers.estimated_owners,
+                compact_number(prediction.owners),
                 owners_sub,
                 compact=True,
             ),
@@ -88,8 +99,8 @@ def render_results(
         st.markdown(
             _tile(
                 "revenue",
-                money(numbers.revenue),
-                "owners × price",
+                money(prediction.revenue),
+                "owners × your price",
                 tone="green",
             ),
             unsafe_allow_html=True,
@@ -103,37 +114,44 @@ def render_results(
     bottom = st.columns(3)
     with bottom[0]:
         st.markdown(
-            _tile("peak_ccu", compact_number(numbers.peak_ccu), "at launch"),
+            _tile(
+                "suggested price",
+                price_label(prediction.suggested_price),
+                "what model_price would charge",
+            ),
             unsafe_allow_html=True,
         )
     with bottom[1]:
+        gap = prediction.price_gap
         st.markdown(
             _tile(
-                "metacritic_score",
-                str(numbers.metacritic_score),
-                f"user_score {numbers.user_score}",
+                "price gap",
+                f"{gap:+,.2f}",
+                "above suggested" if gap >= 0 else "below suggested",
+                tone="green" if abs(gap) < 2 else "",
             ),
             unsafe_allow_html=True,
         )
     with bottom[2]:
         st.markdown(
             _tile(
-                "recommendations",
-                compact_number(numbers.recommendations),
-                "store recs",
+                "confidence",
+                f"{prediction.owners_confidence:.0%}",
+                "on the owners bucket",
             ),
             unsafe_allow_html=True,
         )
 
     # ---- review summary, styled like the store ----------------------------
+    # Review *counts* are not a trained target, so the badge reports the
+    # predicted percentage rather than a positive / negative split.
     st.markdown(
         f'<div class="steam-card">'
         f'<div class="card-title">Expected review summary</div>'
         f'<div class="sentiment-row">'
         f'<span class="sentiment-badge" style="color:{color}">{label}</span>'
-        f'<span class="sentiment-meta">{numbers.positive:,} positive / '
-        f"{numbers.negative:,} negative &nbsp;&middot;&nbsp; "
-        f"{numbers.total_reviews:,} total</span>"
+        f'<span class="sentiment-meta">{pct:.1f}% positive &nbsp;&middot;&nbsp; '
+        f"predicted by model_review</span>"
         f"</div>"
         f'<div class="score-bar"><div style="width:{pct:.1f}%;'
         f'background:{color}"></div></div>'
@@ -147,8 +165,14 @@ def render_results(
             '<div class="card-title" style="margin-top:8px">Drivers</div>',
             unsafe_allow_html=True,
         )
-        st.altair_chart(_driver_chart(numbers.drivers))
-        st.caption("Sample weights for layout purposes.")
+        if prediction.drivers:
+            st.altair_chart(_driver_chart(prediction.drivers))
+            st.caption(
+                f"SHAP values from explainer_owners ({prediction.backend}) for the "
+                "predicted bucket — log-odds, not owners."
+            )
+        else:
+            st.caption("No SHAP explainer available for this model set.")
 
 
 def _driver_chart(drivers: dict[str, float]) -> alt.Chart:
@@ -162,12 +186,12 @@ def _driver_chart(drivers: dict[str, float]) -> alt.Chart:
     return (
         alt.Chart(frame)
         # No fixed mark height: at this chart height a hard 16px collapses the
-        # seven bands onto one row. Let the band scale size the bars.
+        # bands onto one row. Let the band scale size the bars.
         .mark_bar(cornerRadiusEnd=2)
         .encode(
-            x=alt.X("impact:Q", title="Impact on estimated_owners"),
-            # labelLimit: column names like supported_languages get an ellipsis
-            # at Altair's 180px default once the legend eats the width.
+            x=alt.X("impact:Q", title="SHAP impact on predicted owners bucket"),
+            # labelLimit: names like "Steam Trading Cards (category)" get an
+            # ellipsis at Altair's 180px default once the legend eats the width.
             y=alt.Y(
                 "feature:N",
                 sort="-x",
@@ -183,8 +207,8 @@ def _driver_chart(drivers: dict[str, float]) -> alt.Chart:
                 legend=alt.Legend(title=None, orient="right"),
             ),
             tooltip=[
-                alt.Tooltip("feature:N", title="Column"),
-                alt.Tooltip("impact:Q", title="Impact", format="+.2f"),
+                alt.Tooltip("feature:N", title="Feature"),
+                alt.Tooltip("impact:Q", title="SHAP", format="+.3f"),
             ],
         )
         .properties(height=175, width="container")

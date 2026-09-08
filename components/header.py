@@ -20,9 +20,19 @@ def render_header() -> None:
     )
 
 
-def render_sidebar() -> dict:
-    """Display toggles. Returns what the result panel reads."""
+def render_sidebar(backends: dict) -> dict:
+    """Model picker + display toggles. Returns what the result panel reads."""
     with st.sidebar:
+        st.markdown("## Model")
+        names = list(backends)
+        backend = st.radio(
+            "trained model set", names, index=0,
+            help="Both are trained by Steam-Price-Popularity-Predictor: "
+                 "saved_models (LightGBM) and saved_models_xgb (XGBoost).",
+        )
+        st.caption(f"`{backends[backend].name}`")
+
+        st.divider()
         st.markdown("## Display")
         show_intervals = st.toggle("Show ranges", value=True)
         show_drivers = st.toggle("Show drivers", value=True)
@@ -30,8 +40,13 @@ def render_sidebar() -> dict:
         st.divider()
         st.markdown("## About")
         st.caption(
-            "Visual template. The numbers on screen are sample values, not "
-            "predictions."
+            "Predictions come from the three models trained by "
+            "`2_train_models.py`: owners (classifier), review percentage and "
+            "price (regressors). Revenue is derived, not predicted."
         )
 
-        return {"show_intervals": show_intervals, "show_drivers": show_drivers}
+        return {
+            "backend": backend,
+            "show_intervals": show_intervals,
+            "show_drivers": show_drivers,
+        }

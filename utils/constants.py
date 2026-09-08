@@ -1,4 +1,10 @@
-"""Palette and the option lists the form offers."""
+"""Palette and the fixed option lists.
+
+The genre / category / tag vocabularies used to live here as hand-written lists.
+They now come from the trained models (`utils.model_backend.Bundle`), because a
+label the models were never fitted on cannot be scored -- keeping a second,
+drifting copy here is how the form ends up offering options the models ignore.
+"""
 
 from __future__ import annotations
 
@@ -26,53 +32,8 @@ SENTIMENT_COLORS = {
     "negative": STEAM["rust"],
 }
 
-# --------------------------------------------------------------------------
-# Dropdown options
-# --------------------------------------------------------------------------
-GENRES = [
-    "Action", "Adventure", "Casual", "Indie", "Massively Multiplayer",
-    "RPG", "Racing", "Simulation", "Sports", "Strategy",
-    "Early Access", "Free To Play", "Violent", "Gore", "Nudity",
-]
-
-CATEGORIES = [
-    "Single-player", "Multi-player", "PvP", "Online PvP", "Co-op",
-    "Online Co-op", "Shared/Split Screen", "Cross-Platform Multiplayer",
-    "Steam Achievements", "Steam Cloud", "Steam Workshop",
-    "Steam Trading Cards", "Steam Leaderboards", "Full controller support",
-    "Partial Controller Support", "Remote Play Together", "VR Supported",
-    "Includes level editor", "In-App Purchases", "Captions available",
-]
-
-TAGS = [
-    "2D", "3D", "Action Roguelike", "Anime", "Atmospheric", "Automation",
-    "Base Building", "Bullet Hell", "Card Game", "City Builder", "Colony Sim",
-    "Comedy", "Crafting", "Cute", "Dark Fantasy", "Deckbuilding",
-    "Difficult", "Exploration", "Farming Sim", "First-Person", "Souls-like",
-    "Great Soundtrack", "Hack and Slash", "Horror", "Immersive Sim",
-    "Metroidvania", "Multiplayer", "Narrative", "Open World", "Pixel Graphics",
-    "Platformer", "Point & Click", "Procedural Generation", "Psychological Horror",
-    "Puzzle", "Relaxing", "Replay Value", "Rogue-lite", "Sandbox", "Sci-fi",
-    "Shooter", "Simulation", "Stealth", "Story Rich", "Survival",
-    "Tactical", "Third Person", "Turn-Based", "Visual Novel", "Zombies",
-]
-
-LANGUAGES = [
-    "English", "Simplified Chinese", "Traditional Chinese", "Japanese",
-    "Korean", "Russian", "German", "French", "Spanish - Spain",
-    "Spanish - Latin America", "Portuguese - Brazil", "Italian", "Polish",
-    "Turkish", "Dutch", "Danish", "Finnish", "Norwegian", "Swedish",
-    "Czech", "Hungarian", "Ukrainian", "Thai", "Vietnamese", "Arabic",
-]
-
+# Three BOOLEAN feature columns: supports_windows / mac / linux.
 PLATFORMS = ["Windows", "Mac", "Linux"]
 
-# `price_status` is a STRING column in the source table.
+# Anything other than "Paid" sets the `is_free` feature and zeroes `price`.
 PRICE_STATUS = ["Paid", "Free", "Free To Play"]
-
-VOCAB = {
-    "genres": GENRES,
-    "categories": CATEGORIES,
-    "tags": TAGS,
-    "languages": LANGUAGES,
-}

@@ -8,6 +8,11 @@ expects.
 `genres` / `categories` / `tags` carry display labels for the store capsule;
 `*_columns` carry the matching one-hot column names the models were trained on.
 The form resolves one to the other via the vocabulary read off the models.
+
+`name`, `developers` and `publishers` used to live here. None were model
+features -- they only decorated the result capsule -- so the form no longer
+asks for them. `release_date` stays because `release_year` IS a feature, but it
+is no longer editable either: it defaults to the current year.
 """
 
 from __future__ import annotations
@@ -20,12 +25,10 @@ from datetime import date
 class GameSpec:
     """Pre-launch columns -- the model inputs."""
 
-    name: str = "Neon Drifter"
+    # Not user-editable: feeds the `release_year` feature.
     release_date: date = field(default_factory=date.today)
     price: float = 19.99
     price_status: str = "Paid"
-    developers: str = ""
-    publishers: str = ""
 
     # Display labels (shown on the capsule)
     genres: list[str] = field(default_factory=list)

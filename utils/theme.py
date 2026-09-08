@@ -36,12 +36,13 @@ def steam_chart_theme() -> dict:
                 "gridColor": "rgba(102, 192, 244, 0.10)",
                 "domainColor": "rgba(102, 192, 244, 0.20)",
                 "tickColor": "rgba(102, 192, 244, 0.20)",
-                "labelFontSize": 11,
-                "titleFontSize": 11,
+                "labelFontSize": 13,
+                "titleFontSize": 13,
             },
             "legend": {
                 "labelColor": STEAM["text_muted"],
                 "titleColor": STEAM["text_muted"],
+                "labelFontSize": 13,
             },
             "view": {"stroke": "transparent"},
         }

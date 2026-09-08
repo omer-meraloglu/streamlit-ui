@@ -2,11 +2,11 @@
 
 Every value shown is a model output or is derived from one:
 
-  estimated_owners   model_owners  (classifier -> bucket mid-point)
+  estimated_owners   model_owners  (classifier -> the bucket's own range)
   review score       model_review  (regressor, positive_review_percentage)
   suggested price    model_price   (regressor on log1p(price), inverted)
   confidence         model_owners  predict_proba on the chosen bucket
-  revenue            derived: predicted owners x the price you entered
+  revenue            derived: the owners range x the price you entered
   drivers            SHAP values from explainer_owners
 """
 
@@ -55,53 +55,54 @@ def render_results(
     label, color = review_label(prediction.review_pct)
     pct = prediction.review_pct
 
-    # ---- headline: the game as a store capsule ---------------------------
+    # ---- headline capsule: price, platforms and the picked chips ----------
     tags_html = "".join(
         f'<span class="capsule">{t}</span>' for t in (spec.genres + spec.tags)[:8]
     )
-    byline = spec.developers or "Unknown developer"
-    if spec.publishers and spec.publishers != spec.developers:
-        byline += f" &nbsp;&middot;&nbsp; {spec.publishers}"
-
     st.markdown(
         f'<div class="steam-card">'
-        f'<div style="font-size:22px;color:#fff">{spec.name}</div>'
-        f'<div style="font-size:13px;color:#8f98a0;margin:4px 0 10px">'
-        f"{price_label(prediction.entered_price)} &nbsp;&middot;&nbsp; "
-        f"{spec.release_date:%d %b %Y} &nbsp;&middot;&nbsp; "
-        f'{", ".join(spec.platforms)} &nbsp;&middot;&nbsp; {byline}</div>'
-        f"{tags_html}</div>",
+        f'<div style="font-size:24px;color:#fff">'
+        f"{price_label(prediction.entered_price)}"
+        f'<span style="font-size:14px;color:#8f98a0"> &nbsp;&middot;&nbsp; '
+        f'{", ".join(spec.platforms)}</span></div>'
+        f'<div style="margin-top:9px">{tags_html}</div></div>',
         unsafe_allow_html=True,
     )
 
     # ---- metric tiles ------------------------------------------------------
-    if settings["show_intervals"] and prediction.owners_high > prediction.owners_low:
+    owners_value = (
+        f"{compact_number(prediction.owners_low)}–"
+        f"{compact_number(prediction.owners_high)}"
+    )
+    # The wider span is only worth showing when it adds something: with 99% of
+    # the mass on one bucket it is identical to the bucket itself.
+    wider = (
+        prediction.spread_low < prediction.owners_low
+        or prediction.spread_high > prediction.owners_high
+    )
+    if settings["show_intervals"] and wider:
         owners_sub = (
-            f"{compact_number(prediction.owners_low)}–"
-            f"{compact_number(prediction.owners_high)} · 80% of mass"
+            f"80% of mass: {compact_number(prediction.spread_low)}–"
+            f"{compact_number(prediction.spread_high)}"
         )
     else:
-        owners_sub = "bucket mid-point"
+        owners_sub = "predicted owner range"
 
     # 3 per row x 2 rows, so the six values fit without scrolling.
     top = st.columns(3)
     with top[0]:
         st.markdown(
-            _tile(
-                "estimated_owners",
-                compact_number(prediction.owners),
-                owners_sub,
-                compact=True,
-            ),
+            _tile("estimated_owners", owners_value, owners_sub, compact=True),
             unsafe_allow_html=True,
         )
     with top[1]:
         st.markdown(
             _tile(
                 "revenue",
-                money(prediction.revenue),
-                "owners × your price",
+                f"{money(prediction.revenue_low)}–{money(prediction.revenue_high)}",
+                "owner range × your price",
                 tone="green",
+                compact=True,
             ),
             unsafe_allow_html=True,
         )

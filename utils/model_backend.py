@@ -37,6 +37,14 @@ SIBLING_ROOT = APP_DIR.parent / "Steam-Price-Popularity-Predictor" / "ml_models"
 # deployed app gets its models -- there is no sibling checkout in the cloud.
 LOCAL_ROOT = APP_DIR / "models"
 
+# estimated_owners_avg holds the MID-POINT of a Steam owner range ("0 - 20,000"
+# is stored as 10000). These edges reproduce the ranges, so a prediction can be
+# reported as the interval it actually is rather than a spuriously exact number.
+OWNER_BUCKET_EDGES = [
+    0, 20_000, 50_000, 100_000, 200_000, 500_000, 1_000_000, 2_000_000,
+    5_000_000, 10_000_000, 20_000_000, 50_000_000, 100_000_000, 200_000_000,
+]
+
 BACKENDS = {"LightGBM": "saved_models", "XGBoost": "saved_models_xgb"}
 TARGETS = ("price", "owners", "review")
 
@@ -129,6 +137,7 @@ class Bundle:
     models: dict
     features: dict[str, list[str]]
     owner_classes: np.ndarray      # owner mid-points, ascending
+    owner_bounds: list             # (low, high) edges aligned with the above
     class_order: np.ndarray        # encoder index for each entry above
     explainers: dict
     genres: dict[str, str]
@@ -154,6 +163,24 @@ def _feature_names(model, directory: Path, target: str) -> list[str]:
     # Last resort: the test frame saved alongside the model.
     X, _ = joblib.load(directory / f"test_data_{target}.pkl")
     return list(X.columns)
+
+
+def _owner_bounds(mids: np.ndarray) -> list[tuple[float, float]]:
+    """Mid-points -> (low, high) edges, verified against OWNER_BUCKET_EDGES.
+
+    Falls back to a degenerate range if the trained classes ever stop lining up
+    with the edges, so a schema change degrades to the old point estimate
+    instead of inventing an interval.
+    """
+    if len(mids) == len(OWNER_BUCKET_EDGES) - 1 and all(
+        abs((OWNER_BUCKET_EDGES[i] + OWNER_BUCKET_EDGES[i + 1]) / 2 - m) < 1
+        for i, m in enumerate(mids)
+    ):
+        return [
+            (float(OWNER_BUCKET_EDGES[i]), float(OWNER_BUCKET_EDGES[i + 1]))
+            for i in range(len(mids))
+        ]
+    return [(float(m), float(m)) for m in mids]
 
 
 @lru_cache(maxsize=4)
@@ -184,6 +211,7 @@ def load_bundle(label: str) -> Bundle:
         models=models,
         features=features,
         owner_classes=values[order],
+        owner_bounds=_owner_bounds(values[order]),
         class_order=order,
         explainers=explainers,
         genres=_vocab(union, "genre_"),
@@ -228,14 +256,16 @@ def build_frame(spec, features: list[str], price: float | None) -> pd.DataFrame:
 class Prediction:
     """Real model output. Every field below is predicted or derived from one."""
 
-    owners: float                  # predicted bucket mid-point
+    owners_low: float              # predicted bucket's lower edge
+    owners_high: float             # predicted bucket's upper edge
     owners_confidence: float       # probability mass on that bucket
-    owners_low: float              # 10th percentile of the class distribution
-    owners_high: float             # 90th percentile
+    spread_low: float              # lower edge spanning the middle 80% of mass
+    spread_high: float             # upper edge of the same span
     review_pct: float              # positive_review_percentage, 0-100
     suggested_price: float         # what the price model would charge
     entered_price: float           # what the user typed (drives owners/review)
-    revenue: float                 # derived: owners x entered price
+    revenue_low: float             # derived: owners range x entered price
+    revenue_high: float
     drivers: dict[str, float]      # SHAP values for the owners model
     backend: str
 
@@ -312,24 +342,25 @@ def predict(spec, bundle: Bundle) -> Prediction:
     best = int(np.argmax(proba))
 
     cumulative = np.cumsum(proba)
-    low = float(bundle.owner_classes[int(np.searchsorted(cumulative, 0.10))])
-    high = float(bundle.owner_classes[
-        min(int(np.searchsorted(cumulative, 0.90)), len(bundle.owner_classes) - 1)
-    ])
+    last = len(bundle.owner_bounds) - 1
+    lo_idx = min(int(np.searchsorted(cumulative, 0.10)), last)
+    hi_idx = min(int(np.searchsorted(cumulative, 0.90)), last)
 
     review_frame = build_frame(spec, bundle.features["review"], price=price)
     review_pct = float(np.clip(bundle.models["review"].predict(review_frame)[0], 0, 100))
 
-    owners = float(bundle.owner_classes[best])
+    owners_low, owners_high = bundle.owner_bounds[best]
     return Prediction(
-        owners=owners,
+        owners_low=owners_low,
+        owners_high=owners_high,
         owners_confidence=float(proba[best]),
-        owners_low=low,
-        owners_high=high,
+        spread_low=bundle.owner_bounds[lo_idx][0],
+        spread_high=bundle.owner_bounds[hi_idx][1],
         review_pct=review_pct,
         suggested_price=suggested,
         entered_price=price,
-        revenue=owners * price,
+        revenue_low=owners_low * price,
+        revenue_high=owners_high * price,
         drivers=_shap_for_owners(bundle, owners_frame, int(bundle.class_order[best])),
         backend=bundle.label,
     )

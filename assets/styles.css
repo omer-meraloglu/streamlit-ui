@@ -47,6 +47,10 @@ span[class*="material-icons"] {
 .block-container {
   padding-top: 0.9rem;
   padding-bottom: 0.5rem;
+  /* Streamlit ships 5rem (80px) each side, which strands ~160px on a laptop.
+     1.75rem keeps the cards clear of the viewport edge without the gutter. */
+  padding-left: 1.75rem;
+  padding-right: 1.75rem;
   max-width: 1600px;
 }
 

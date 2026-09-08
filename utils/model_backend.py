@@ -244,10 +244,28 @@ class Prediction:
         return self.entered_price - self.suggested_price
 
 
+def _owners_explainer(bundle: Bundle):
+    """The owners explainer, rebuilt from the model when no pickle shipped.
+
+    explainer_owners.pkl is 26MB -- larger than every other artefact combined --
+    so a deployment can ship the models alone and have the explainer
+    reconstructed here. shap is imported lazily: it costs ~1s and is not needed
+    when the drivers panel is switched off.
+    """
+    if "owners" not in bundle.explainers:
+        try:
+            import shap
+
+            bundle.explainers["owners"] = shap.TreeExplainer(bundle.models["owners"])
+        except Exception:
+            return None
+    return bundle.explainers["owners"]
+
+
 def _shap_for_owners(bundle: Bundle, frame: pd.DataFrame, class_index: int,
                      top_n: int = 8) -> dict[str, float]:
     """SHAP contributions for the predicted owner bucket, largest |value| first."""
-    explainer = bundle.explainers.get("owners")
+    explainer = _owners_explainer(bundle)
     if explainer is None:
         return {}
     try:

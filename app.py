@@ -17,8 +17,8 @@ from components.results import render_empty_state, render_results
 from utils.model_backend import (
     available_backends,
     load_bundle,
-    model_root,
     predict,
+    search_roots,
 )
 from utils.theme import inject_theme, register_chart_theme
 
@@ -35,10 +35,13 @@ register_chart_theme()
 backends = available_backends()
 if not backends:
     render_header()
+    searched = "\n".join(f"- `{r}`" for r in search_roots())
     st.error(
-        f"No trained models found under `{model_root()}`.\n\n"
-        "Run `2_train_models.py` in Steam-Price-Popularity-Predictor, or set "
-        "`STEAMCAST_MODEL_ROOT` to the directory holding `saved_models/`."
+        "No trained models found. Searched, in order:\n\n"
+        f"{searched}\n\n"
+        "Run `2_train_models.py` in Steam-Price-Popularity-Predictor, upload the "
+        "`.pkl` files into this repo's `models/` directory, or set "
+        "`STEAMCAST_MODEL_ROOT`."
     )
     st.stop()
 

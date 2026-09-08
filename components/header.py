@@ -30,7 +30,9 @@ def render_sidebar(backends: dict) -> dict:
             help="Both are trained by Steam-Price-Popularity-Predictor: "
                  "saved_models (LightGBM) and saved_models_xgb (XGBoost).",
         )
-        st.caption(f"`{backends[backend].name}`")
+        # Two roots can both hold models; show the path so it is obvious
+        # which one is live.
+        st.caption(f"`{backends[backend]}`")
 
         st.divider()
         st.markdown("## Display")

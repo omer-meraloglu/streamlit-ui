@@ -27,31 +27,63 @@ import pandas as pd
 # --------------------------------------------------------------------------
 # Where the .pkl files live
 # --------------------------------------------------------------------------
-DEFAULT_ROOT = (
-    Path(__file__).resolve().parent.parent.parent
-    / "Steam-Price-Popularity-Predictor"
-    / "ml_models"
-)
+APP_DIR = Path(__file__).resolve().parent.parent
+
+# The training project, checked out next to this one -- the local-dev case, and
+# still what is searched first so a fresh training run keeps winning.
+SIBLING_ROOT = APP_DIR.parent / "Steam-Price-Popularity-Predictor" / "ml_models"
+
+# Fallback: .pkl files uploaded by hand into this repo, which is how the
+# deployed app gets its models -- there is no sibling checkout in the cloud.
+LOCAL_ROOT = APP_DIR / "models"
 
 BACKENDS = {"LightGBM": "saved_models", "XGBoost": "saved_models_xgb"}
 TARGETS = ("price", "owners", "review")
 
+# Label used when the .pkl files sit directly in a root rather than in a
+# saved_models/ subfolder -- the shape a manual upload usually takes. Named
+# neutrally because a flat drop does not say which library trained it.
+FLAT_LABEL = "Uploaded"
 
-def model_root() -> Path:
-    return Path(os.environ.get("STEAMCAST_MODEL_ROOT", DEFAULT_ROOT))
+
+def search_roots() -> list[Path]:
+    """Directories to search, highest priority first."""
+    roots = []
+    override = os.environ.get("STEAMCAST_MODEL_ROOT")
+    if override:
+        roots.append(Path(override))
+    roots.append(SIBLING_ROOT)
+    roots.append(LOCAL_ROOT)
+    return roots
+
+
+def _is_complete(directory: Path) -> bool:
+    """A directory usable as a backend: three models plus the owners encoder."""
+    if not directory.is_dir():
+        return False
+    needed = [directory / f"model_{t}.pkl" for t in TARGETS]
+    needed.append(directory / "label_encoder_owners.pkl")
+    return all(p.exists() for p in needed)
 
 
 def available_backends() -> dict[str, Path]:
-    """Backends whose directory holds a complete set of models."""
-    root = model_root()
-    found = {}
-    for label, folder in BACKENDS.items():
-        d = root / folder
-        needed = [d / f"model_{t}.pkl" for t in TARGETS]
-        needed.append(d / "label_encoder_owners.pkl")
-        if all(p.exists() for p in needed):
-            found[label] = d
-    return found
+    """Backends holding a complete set of models, nearest root winning.
+
+    Each root is checked for saved_models/ and saved_models_xgb/, then for a
+    flat drop of .pkl files in the root itself. A label found in an earlier
+    root is never overwritten by a later one, so the sibling checkout takes
+    precedence over anything uploaded into this repo.
+    """
+    found: dict[str, Path] = {}
+    for root in search_roots():
+        for label, folder in BACKENDS.items():
+            if label not in found and _is_complete(root / folder):
+                found[label] = root / folder
+        if FLAT_LABEL not in found and _is_complete(root):
+            found[FLAT_LABEL] = root
+
+    order = list(BACKENDS) + [FLAT_LABEL]
+    return {label: found[label] for label in order if label in found}
 
 
 # --------------------------------------------------------------------------

@@ -1,20 +1,31 @@
 """Loads the trained models from Steam-Price-Popularity-Predictor and runs them.
 
-Three models were trained by that project's `2_train_models.py`:
+Three models are trained by that project, one per target:
 
-  model_price   LGBM/XGB Regressor  -> log1p(price)                 (no `price` feature)
-  model_owners  LGBM/XGB Classifier -> estimated_owners_avg bucket  (uses `price`)
-  model_review  LGBM/XGB Regressor  -> positive_review_percentage   (uses `price`)
+  price   Regressor  -> log1p(price)                 (no `price` feature)
+  owners  Classifier -> estimated owners bucket      (uses `price`)
+  review  Regressor  -> positive_review_percentage   (uses `price`)
 
-Each was fitted on its *own* selected feature subset (80 / 81 / 82 columns), so
-every model gets a frame built to its own `feature_names`, in its own order --
-XGBoost raises on a mismatch and LightGBM would silently misalign.
+Two on-disk layouts are supported:
+
+  bundles/    the current one. `bundle_<target>.pkl` is a dict carrying the
+              fitted estimator, its `selected_features`, the `target_transform`
+              applied while training and the `error_margins` measured on the
+              held-out set -- so a prediction can be reported with a confidence
+              interval instead of as a bare number.
+  saved_models[_xgb]/   the older one: a bare estimator per target plus
+              `label_encoder_owners.pkl`, and no error margins.
+
+Each model was fitted on its *own* selected feature subset, so every model gets
+a frame built to its own feature list, in its own order -- XGBoost raises on a
+mismatch and LightGBM would silently misalign.
 
 Set STEAMCAST_MODEL_ROOT to point somewhere other than the sibling checkout.
 """
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from functools import lru_cache
@@ -45,8 +56,24 @@ OWNER_BUCKET_EDGES = [
     5_000_000, 10_000_000, 20_000_000, 50_000_000, 100_000_000, 200_000_000,
 ]
 
-BACKENDS = {"LightGBM": "saved_models", "XGBoost": "saved_models_xgb"}
 TARGETS = ("price", "owners", "review")
+
+# The current format: bundle_<target>.pkl, self-describing, error margins
+# included. Listed first so it is what the app opens on.
+BUNDLE_FOLDER = "bundles"
+BUNDLE_LABEL = "LightGBM (final)"
+
+# The earlier format, kept selectable so old runs stay reproducible.
+BACKENDS = {
+    "LightGBM (legacy)": "saved_models",
+    "XGBoost (legacy)": "saved_models_xgb",
+}
+
+# `app_id` is one of the selected features, but a game that has not shipped has
+# no id yet. Steam hands them out in ascending order, so a release configured
+# today would draw one near the top of the range -- feeding that is closer to
+# the truth than 0, which would sit the prediction next to the 2003 catalogue.
+DEFAULT_APP_ID = 3_000_000.0
 
 # Label used when the .pkl files sit directly in a root rather than in a
 # saved_models/ subfolder -- the shape a manual upload usually takes. Named
@@ -65,8 +92,15 @@ def search_roots() -> list[Path]:
     return roots
 
 
-def _is_complete(directory: Path) -> bool:
-    """A directory usable as a backend: three models plus the owners encoder."""
+def _has_bundles(directory: Path) -> bool:
+    """Current layout: one self-describing bundle per target."""
+    return directory.is_dir() and all(
+        (directory / f"bundle_{t}.pkl").exists() for t in TARGETS
+    )
+
+
+def _has_estimators(directory: Path) -> bool:
+    """Older layout: three bare estimators plus the owners encoder."""
     if not directory.is_dir():
         return False
     needed = [directory / f"model_{t}.pkl" for t in TARGETS]
@@ -74,23 +108,30 @@ def _is_complete(directory: Path) -> bool:
     return all(p.exists() for p in needed)
 
 
+def _is_complete(directory: Path) -> bool:
+    """A directory usable as a backend, in either layout."""
+    return _has_bundles(directory) or _has_estimators(directory)
+
+
 def available_backends() -> dict[str, Path]:
     """Backends holding a complete set of models, nearest root winning.
 
-    Each root is checked for saved_models/ and saved_models_xgb/, then for a
-    flat drop of .pkl files in the root itself. A label found in an earlier
-    root is never overwritten by a later one, so the sibling checkout takes
-    precedence over anything uploaded into this repo.
+    Each root is checked for bundles/, then saved_models/ and
+    saved_models_xgb/, then for a flat drop of .pkl files in the root itself. A
+    label found in an earlier root is never overwritten by a later one, so the
+    sibling checkout takes precedence over anything uploaded into this repo.
     """
     found: dict[str, Path] = {}
     for root in search_roots():
+        if BUNDLE_LABEL not in found and _has_bundles(root / BUNDLE_FOLDER):
+            found[BUNDLE_LABEL] = root / BUNDLE_FOLDER
         for label, folder in BACKENDS.items():
             if label not in found and _is_complete(root / folder):
                 found[label] = root / folder
         if FLAT_LABEL not in found and _is_complete(root):
             found[FLAT_LABEL] = root
 
-    order = list(BACKENDS) + [FLAT_LABEL]
+    order = [BUNDLE_LABEL] + list(BACKENDS) + [FLAT_LABEL]
     return {label: found[label] for label in order if label in found}
 
 
@@ -136,13 +177,16 @@ class Bundle:
     directory: Path
     models: dict
     features: dict[str, list[str]]
-    owner_classes: np.ndarray      # owner mid-points, ascending
-    owner_bounds: list             # (low, high) edges aligned with the above
-    class_order: np.ndarray        # encoder index for each entry above
+    transforms: dict[str, str | None]   # target -> transform applied in training
+    margins: dict[str, dict]            # target -> held-out error stats ({} if none)
+    owner_labels: list[str]             # bucket names, smallest first
+    owner_bounds: list                  # (low, high) owners, aligned with the above
+    class_order: np.ndarray             # model class index for each entry above
     explainers: dict
     genres: dict[str, str]
     categories: dict[str, str]
     tags: dict[str, str]
+    languages: dict[str, str]
 
     @property
     def all_features(self) -> set[str]:
@@ -163,6 +207,26 @@ def _feature_names(model, directory: Path, target: str) -> list[str]:
     # Last resort: the test frame saved alongside the model.
     X, _ = joblib.load(directory / f"test_data_{target}.pkl")
     return list(X.columns)
+
+
+_SUFFIXES = {"k": 1e3, "m": 1e6, "b": 1e9}
+
+
+def _owner_edge(text: str) -> float:
+    """'20k' -> 20000.0."""
+    text = text.strip().lower().replace(",", "")
+    if text and text[-1] in _SUFFIXES:
+        return float(text[:-1]) * _SUFFIXES[text[-1]]
+    return float(text)
+
+
+def _owner_range(label: str) -> tuple[float, float]:
+    """'20k-50k' -> (20000, 50000); the open-ended '1M+' -> (1000000, inf)."""
+    label = label.strip()
+    if label.endswith("+"):
+        return _owner_edge(label[:-1]), math.inf
+    low, _, high = label.partition("-")
+    return _owner_edge(low), _owner_edge(high)
 
 
 def _owner_bounds(mids: np.ndarray) -> list[tuple[float, float]]:
@@ -186,37 +250,94 @@ def _owner_bounds(mids: np.ndarray) -> list[tuple[float, float]]:
 @lru_cache(maxsize=4)
 def load_bundle(label: str) -> Bundle:
     directory = available_backends()[label]
+    if _has_bundles(directory):
+        return _load_bundled(label, directory)
+    return _load_estimators(label, directory)
 
-    models, features, explainers = {}, {}, {}
+
+def _explainers(directory: Path) -> dict:
+    """Any explainer_<target>.pkl sitting next to the models."""
+    found = {}
     for target in TARGETS:
-        models[target] = joblib.load(directory / f"model_{target}.pkl")
-        features[target] = _feature_names(models[target], directory, target)
         path = directory / f"explainer_{target}.pkl"
         if path.exists():
             try:
-                explainers[target] = joblib.load(path)
+                found[target] = joblib.load(path)
             except Exception:      # a stale explainer must not block predicting
                 pass
+    return found
 
-    encoder = joblib.load(directory / "label_encoder_owners.pkl")
-    # Classes are numeric owner mid-points stored as strings ('10000', '150000'),
-    # so LabelEncoder ordered them lexically. Sort numerically for display.
-    values = np.array([float(c) for c in encoder.classes_])
-    order = np.argsort(values)
 
+def _assemble(label, directory, models, features, transforms, margins,
+              owner_labels, owner_bounds, class_order, explainers) -> Bundle:
     union = sorted(set().union(*features.values()))
     return Bundle(
         label=label,
         directory=directory,
         models=models,
         features=features,
-        owner_classes=values[order],
-        owner_bounds=_owner_bounds(values[order]),
-        class_order=order,
+        transforms=transforms,
+        margins=margins,
+        owner_labels=owner_labels,
+        owner_bounds=owner_bounds,
+        class_order=class_order,
         explainers=explainers,
         genres=_vocab(union, "genre_"),
         categories=_vocab(union, "cat_"),
         tags=_vocab(union, "tag_"),
+        languages=_vocab(union, "lang_"),
+    )
+
+
+def _load_bundled(label: str, directory: Path) -> Bundle:
+    """Current layout: each pickle is a dict describing its own model."""
+    models, features, transforms, margins = {}, {}, {}, {}
+    for target in TARGETS:
+        saved = joblib.load(directory / f"bundle_{target}.pkl")
+        models[target] = saved["model"]
+        features[target] = list(saved["selected_features"])
+        transforms[target] = saved.get("target_transform")
+        margins[target] = dict(saved.get("error_margins") or {})
+
+    # The classifier is fitted on the bucket names themselves ('20k-50k'), so
+    # `classes_` is in lexical order -- '1M+' lands second. Sort by lower edge.
+    names = [str(c) for c in models["owners"].classes_]
+    bounds = [_owner_range(n) for n in names]
+    order = np.argsort([low for low, _ in bounds])
+
+    return _assemble(
+        label, directory, models, features, transforms, margins,
+        owner_labels=[names[i] for i in order],
+        owner_bounds=[bounds[i] for i in order],
+        class_order=order,
+        explainers=_explainers(directory),
+    )
+
+
+def _load_estimators(label: str, directory: Path) -> Bundle:
+    """Older layout: bare estimators, a separate encoder, no error margins."""
+    models, features = {}, {}
+    for target in TARGETS:
+        models[target] = joblib.load(directory / f"model_{target}.pkl")
+        features[target] = _feature_names(models[target], directory, target)
+
+    encoder = joblib.load(directory / "label_encoder_owners.pkl")
+    # Classes are numeric owner mid-points stored as strings ('10000', '150000'),
+    # so LabelEncoder ordered them lexically. Sort numerically for display.
+    values = np.array([float(c) for c in encoder.classes_])
+    order = np.argsort(values)
+    bounds = _owner_bounds(values[order])
+
+    return _assemble(
+        label, directory, models, features,
+        # These models were trained with log1p(price) and untransformed targets
+        # elsewhere; nothing was saved alongside them to say so.
+        transforms={"price": "log1p", "owners": None, "review": None},
+        margins={t: {} for t in TARGETS},
+        owner_labels=[f"{low:,.0f}-{high:,.0f}" for low, high in bounds],
+        owner_bounds=bounds,
+        class_order=order,
+        explainers=_explainers(directory),
     )
 
 
@@ -226,11 +347,13 @@ def load_bundle(label: str) -> Bundle:
 def build_frame(spec, features: list[str], price: float | None) -> pd.DataFrame:
     """One row, columns exactly `features` in order. Unlisted one-hots stay 0."""
     values: dict[str, float] = {
+        "app_id": DEFAULT_APP_ID,
         "release_year": float(spec.release_date.year),
         "achievements_count": float(spec.achievements),
         "dlc_count": float(spec.dlc_count),
         "screenshot_count": float(spec.n_screenshots),
         "movie_count": float(spec.n_movies),
+        "total_media_count": float(spec.n_screenshots + spec.n_movies),
         "has_website": float(spec.has_website),
         "has_support_url": float(getattr(spec, "has_support_url", False)),
         "has_support_email": float(getattr(spec, "has_support_email", False)),
@@ -242,7 +365,13 @@ def build_frame(spec, features: list[str], price: float | None) -> pd.DataFrame:
     if price is not None:
         values["price"] = float(price)
 
-    for column in spec.genre_columns + spec.category_columns + spec.tag_columns:
+    one_hots = (
+        spec.genre_columns
+        + spec.category_columns
+        + spec.tag_columns
+        + getattr(spec, "language_columns", [])
+    )
+    for column in one_hots:
         values[column] = 1.0
 
     row = [values.get(name, 0.0) for name in features]
@@ -267,11 +396,52 @@ class Prediction:
     revenue_low: float             # derived: owners range x entered price
     revenue_high: float
     drivers: dict[str, float]      # SHAP values for the owners model
+    margins: dict[str, dict]       # held-out error stats, straight off the bundle
     backend: str
 
     @property
     def price_gap(self) -> float:
         return self.entered_price - self.suggested_price
+
+    # ---- confidence intervals -------------------------------------------
+    # `confidence_95` was measured on the held-out set as 1.96 x the standard
+    # deviation of the residuals, so it is a half-width in the target's own
+    # unit: dollars for price, percentage points for the review score. Nothing
+    # was saved for the older model sets, hence the 0.0 default and
+    # `has_margins`, which switches the interval display off rather than
+    # printing a made-up +/- 0.
+    @property
+    def price_margin(self) -> float:
+        return float(self.margins.get("price", {}).get("confidence_95", 0.0))
+
+    @property
+    def review_margin(self) -> float:
+        return float(self.margins.get("review", {}).get("confidence_95", 0.0))
+
+    @property
+    def owners_mean_confidence(self) -> float:
+        """Average winning-class probability over the held-out set."""
+        return float(self.margins.get("owners", {}).get("mean_confidence", 0.0))
+
+    @property
+    def has_margins(self) -> bool:
+        return any(self.margins.get(t) for t in ("price", "owners", "review"))
+
+    @property
+    def price_interval(self) -> tuple[float, float]:
+        """95% interval around the suggested price, floored at free."""
+        return (
+            max(self.suggested_price - self.price_margin, 0.0),
+            self.suggested_price + self.price_margin,
+        )
+
+    @property
+    def review_interval(self) -> tuple[float, float]:
+        """95% interval around the review score, clipped to 0-100."""
+        return (
+            max(self.review_pct - self.review_margin, 0.0),
+            min(self.review_pct + self.review_margin, 100.0),
+        )
 
 
 def _owners_explainer(bundle: Bundle):
@@ -314,8 +484,12 @@ def _shap_for_owners(bundle: Bundle, frame: pd.DataFrame, class_index: int,
     else:
         return {}
 
+    # `app_id` is a real feature but is fed a placeholder (an unreleased game
+    # has no id), so its contribution says nothing about this configuration.
     pairs = sorted(
-        zip(frame.columns, row), key=lambda kv: abs(kv[1]), reverse=True
+        ((c, v) for c, v in zip(frame.columns, row) if c != "app_id"),
+        key=lambda kv: abs(kv[1]),
+        reverse=True,
     )[:top_n]
     return {driver_label(k): float(v) for k, v in pairs}
 
@@ -328,12 +502,21 @@ def driver_label(column: str) -> str:
     return humanize(column)
 
 
+def _untransform(value: float, transform: str | None) -> float:
+    """Undo the transform the target was trained on."""
+    if transform == "log1p":
+        return float(np.expm1(value))
+    return float(value)
+
+
 def predict(spec, bundle: Bundle) -> Prediction:
     price = 0.0 if spec.price_status != "Paid" else max(float(spec.price), 0.0)
 
-    # price model predicts log1p(price) and never sees `price` as an input
+    # the price model never sees `price` as an input
     price_frame = build_frame(spec, bundle.features["price"], price=None)
-    suggested = float(np.expm1(bundle.models["price"].predict(price_frame)[0]))
+    suggested = _untransform(
+        bundle.models["price"].predict(price_frame)[0], bundle.transforms["price"]
+    )
     suggested = max(suggested, 0.0)
 
     owners_frame = build_frame(spec, bundle.features["owners"], price=price)
@@ -347,7 +530,13 @@ def predict(spec, bundle: Bundle) -> Prediction:
     hi_idx = min(int(np.searchsorted(cumulative, 0.90)), last)
 
     review_frame = build_frame(spec, bundle.features["review"], price=price)
-    review_pct = float(np.clip(bundle.models["review"].predict(review_frame)[0], 0, 100))
+    review_pct = float(np.clip(
+        _untransform(
+            bundle.models["review"].predict(review_frame)[0],
+            bundle.transforms["review"],
+        ),
+        0, 100,
+    ))
 
     owners_low, owners_high = bundle.owner_bounds[best]
     return Prediction(
@@ -360,7 +549,10 @@ def predict(spec, bundle: Bundle) -> Prediction:
         suggested_price=suggested,
         entered_price=price,
         revenue_low=owners_low * price,
-        revenue_high=owners_high * price,
+        # The top bucket is open-ended, so its upper edge is infinite; a free
+        # release would turn that into a NaN rather than a revenue of nothing.
+        revenue_high=owners_high * price if price > 0 else 0.0,
         drivers=_shap_for_owners(bundle, owners_frame, int(bundle.class_order[best])),
+        margins=bundle.margins,
         backend=bundle.label,
     )

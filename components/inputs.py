@@ -27,6 +27,7 @@ from utils.constants import PLATFORMS, PRICE_STATUS
 DEFAULT_GENRES = ["Action", "Indie"]
 DEFAULT_CATEGORIES = ["Single-player", "Steam Achievements"]
 DEFAULT_TAGS = ["Pixel Graphics", "Story Rich"]
+DEFAULT_LANGUAGES = ["English"]
 
 
 def _section_title(text: str) -> None:
@@ -80,6 +81,15 @@ def render_feature_form(bundle) -> GameSpec | None:
                 default=_defaults(DEFAULT_CATEGORIES, bundle.categories),
             )
 
+            # Only the final models carry `lang_*` columns; the older sets have
+            # none, and an empty multiselect would just be a dead control.
+            languages = []
+            if bundle.languages:
+                languages = st.multiselect(
+                    "supported_languages", list(bundle.languages),
+                    default=_defaults(DEFAULT_LANGUAGES, bundle.languages),
+                )
+
             # number_input rather than slider: sliders cost ~30px more height.
             col6, col7, col8, col9 = st.columns(4)
             with col6:
@@ -123,6 +133,8 @@ def render_feature_form(bundle) -> GameSpec | None:
         genre_columns=[bundle.genres[g] for g in genres],
         category_columns=[bundle.categories[c] for c in categories],
         tag_columns=[bundle.tags[t] for t in tags],
+        languages=languages,
+        language_columns=[bundle.languages[l] for l in languages],
         achievements=int(achievements),
         dlc_count=int(dlc_count),
         platforms=platforms or ["Windows"],

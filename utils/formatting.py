@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from .constants import SENTIMENT_COLORS
 
 
@@ -48,3 +50,10 @@ def money(value: float) -> str:
 
 def price_label(price: float) -> str:
     return "Free to Play" if price <= 0 else f"${price:,.2f}"
+
+
+def range_label(low: float, high: float, fmt=compact_number) -> str:
+    """'20K–50K'. The top owners bucket is open-ended, so that reads '1M+'."""
+    if math.isinf(high):
+        return f"{fmt(low)}+"
+    return f"{fmt(low)}–{fmt(high)}"

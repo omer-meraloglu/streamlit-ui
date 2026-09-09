@@ -175,6 +175,51 @@ a { color: var(--steam-blue); }
 .metric-tile.is-gold { border-left-color: var(--steam-gold); }
 .metric-tile.is-gold .sub { color: var(--steam-gold); }
 
+/* ---------- confidence intervals ------------------------------------------ */
+
+/* One row per prediction: name, interval, and what the interval is based on.
+   Grid rather than flex so the three intervals line up on their columns. */
+.interval-row {
+  display: grid;
+  grid-template-columns: 128px 150px 1fr;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+  border-top: 1px solid rgba(102, 192, 244, 0.10);
+}
+
+.interval-row:first-of-type { border-top: none; }
+
+.interval-label {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--steam-muted);
+}
+
+.interval-value {
+  font-size: 15px;
+  color: #ffffff;
+  white-space: nowrap;
+}
+
+.interval-basis {
+  font-size: 12px;
+  color: var(--steam-blue);
+}
+
+.interval-note {
+  font-size: 12px;
+  color: var(--steam-muted);
+  margin-top: 7px;
+}
+
+/* the three columns stop fitting side by side in a narrow result pane */
+@media (max-width: 1100px) {
+  .interval-row { grid-template-columns: 120px 1fr; }
+  .interval-basis { grid-column: 1 / -1; }
+}
+
 /* ---------- review sentiment badge ---------------------------------------- */
 
 .sentiment-row {

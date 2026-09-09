@@ -5,9 +5,10 @@ This used to hold mock numbers. Predictions now come from the trained models in
 here is `GameSpec`: the pre-launch fields, in the shape the feature builder
 expects.
 
-`genres` / `categories` / `tags` carry display labels for the store capsule;
-`*_columns` carry the matching one-hot column names the models were trained on.
-The form resolves one to the other via the vocabulary read off the models.
+`genres` / `categories` / `tags` / `languages` carry display labels for the
+store capsule; `*_columns` carry the matching one-hot column names the models
+were trained on. The form resolves one to the other via the vocabulary read off
+the models.
 
 `name`, `developers` and `publishers` used to live here. None were model
 features -- they only decorated the result capsule -- so the form no longer
@@ -34,11 +35,14 @@ class GameSpec:
     genres: list[str] = field(default_factory=list)
     categories: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
+    # Store-page localisation: the final models were fitted on `lang_*` columns.
+    languages: list[str] = field(default_factory=lambda: ["English"])
 
     # Resolved one-hot column names (fed to the models)
     genre_columns: list[str] = field(default_factory=list)
     category_columns: list[str] = field(default_factory=list)
     tag_columns: list[str] = field(default_factory=list)
+    language_columns: list[str] = field(default_factory=list)
 
     achievements: int = 0
     dlc_count: int = 0

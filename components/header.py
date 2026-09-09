@@ -27,8 +27,10 @@ def render_sidebar(backends: dict) -> dict:
         names = list(backends)
         backend = st.radio(
             "trained model set", names, index=0,
-            help="Both are trained by Steam-Price-Popularity-Predictor: "
-                 "saved_models (LightGBM) and saved_models_xgb (XGBoost).",
+            help="All are trained by Steam-Price-Popularity-Predictor. "
+                 "LightGBM (final) is the current bundle format and the only "
+                 "set carrying error margins; the legacy sets are the earlier "
+                 "saved_models / saved_models_xgb exports.",
         )
         # Two roots can both hold models; show the path so it is obvious
         # which one is live.
@@ -36,15 +38,16 @@ def render_sidebar(backends: dict) -> dict:
 
         st.divider()
         st.markdown("## Display")
-        show_intervals = st.toggle("Show ranges", value=True)
+        show_intervals = st.toggle("Show confidence ranges", value=True)
         show_drivers = st.toggle("Show drivers", value=True)
 
         st.divider()
         st.markdown("## About")
         st.caption(
-            "Predictions come from the three models trained by "
-            "`2_train_models.py`: owners (classifier), review percentage and "
-            "price (regressors). Revenue is derived, not predicted."
+            "Predictions come from three trained models: owners (classifier), "
+            "review percentage and price (regressors). Intervals are the error "
+            "margins measured on the held-out set. Revenue is derived, not "
+            "predicted."
         )
 
         return {

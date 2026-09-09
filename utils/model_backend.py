@@ -63,10 +63,13 @@ TARGETS = ("price", "owners", "review")
 BUNDLE_FOLDER = "bundles"
 BUNDLE_LABEL = "LightGBM (final)"
 
-# The earlier format, kept selectable so old runs stay reproducible.
-BACKENDS = {
-    "LightGBM (legacy)": "saved_models",
-    "XGBoost (legacy)": "saved_models_xgb",
+# The earlier format, kept selectable so old runs stay reproducible. Keyed by
+# folder name: the training script has since started dropping bundles into
+# saved_models/ too, and a directory has to be labelled by the format it really
+# holds -- otherwise the bundles get served under the "legacy" name.
+LEGACY_LABELS = {
+    "saved_models": "LightGBM (legacy)",
+    "saved_models_xgb": "XGBoost (legacy)",
 }
 
 # `app_id` is one of the selected features, but a game that has not shipped has
@@ -113,6 +116,19 @@ def _is_complete(directory: Path) -> bool:
     return _has_bundles(directory) or _has_estimators(directory)
 
 
+def _label_for(directory: Path) -> str | None:
+    """What this directory would be called, or None if it holds no model set.
+
+    Bundles win over bare estimators in the same folder: they are the newer
+    export, and they are the only one carrying error margins.
+    """
+    if _has_bundles(directory):
+        return BUNDLE_LABEL
+    if _has_estimators(directory):
+        return LEGACY_LABELS.get(directory.name, FLAT_LABEL)
+    return None
+
+
 def available_backends() -> dict[str, Path]:
     """Backends holding a complete set of models, nearest root winning.
 
@@ -123,15 +139,15 @@ def available_backends() -> dict[str, Path]:
     """
     found: dict[str, Path] = {}
     for root in search_roots():
-        if BUNDLE_LABEL not in found and _has_bundles(root / BUNDLE_FOLDER):
-            found[BUNDLE_LABEL] = root / BUNDLE_FOLDER
-        for label, folder in BACKENDS.items():
-            if label not in found and _is_complete(root / folder):
-                found[label] = root / folder
-        if FLAT_LABEL not in found and _is_complete(root):
-            found[FLAT_LABEL] = root
+        candidates = [root / BUNDLE_FOLDER]
+        candidates += [root / folder for folder in LEGACY_LABELS]
+        candidates.append(root)
+        for directory in candidates:
+            label = _label_for(directory)
+            if label is not None and label not in found:
+                found[label] = directory
 
-    order = [BUNDLE_LABEL] + list(BACKENDS) + [FLAT_LABEL]
+    order = [BUNDLE_LABEL] + list(LEGACY_LABELS.values()) + [FLAT_LABEL]
     return {label: found[label] for label in order if label in found}
 
 
@@ -255,16 +271,36 @@ def load_bundle(label: str) -> Bundle:
     return _load_estimators(label, directory)
 
 
-def _explainers(directory: Path) -> dict:
-    """Any explainer_<target>.pkl sitting next to the models."""
+def _explainer_width(explainer) -> int | None:
+    """How many columns an explainer's own tree expects, when it will say."""
+    try:
+        return int(explainer.model.original_model.num_feature())
+    except Exception:
+        return None
+
+
+def _explainers(directory: Path, features: dict[str, list[str]]) -> dict:
+    """Any explainer_<target>.pkl sitting next to the models, if it still fits.
+
+    Retraining rewrites the models but leaves the old explainer pickles in
+    place, and one fitted on a different feature set does not fail until it is
+    asked for values -- taking the whole drivers panel down with it. Checking
+    the width here means a stale pickle is simply ignored and the explainer
+    gets rebuilt from the model instead.
+    """
     found = {}
     for target in TARGETS:
         path = directory / f"explainer_{target}.pkl"
-        if path.exists():
-            try:
-                found[target] = joblib.load(path)
-            except Exception:      # a stale explainer must not block predicting
-                pass
+        if not path.exists():
+            continue
+        try:
+            explainer = joblib.load(path)
+        except Exception:          # a stale explainer must not block predicting
+            continue
+        width = _explainer_width(explainer)
+        if width is not None and width != len(features[target]):
+            continue
+        found[target] = explainer
     return found
 
 
@@ -310,7 +346,7 @@ def _load_bundled(label: str, directory: Path) -> Bundle:
         owner_labels=[names[i] for i in order],
         owner_bounds=[bounds[i] for i in order],
         class_order=order,
-        explainers=_explainers(directory),
+        explainers=_explainers(directory, features),
     )
 
 
@@ -337,7 +373,7 @@ def _load_estimators(label: str, directory: Path) -> Bundle:
         owner_labels=[f"{low:,.0f}-{high:,.0f}" for low, high in bounds],
         owner_bounds=bounds,
         class_order=order,
-        explainers=_explainers(directory),
+        explainers=_explainers(directory, features),
     )
 
 
@@ -360,8 +396,9 @@ def build_frame(spec, features: list[str], price: float | None) -> pd.DataFrame:
         "supports_windows": float(spec.windows),
         "supports_mac": float(spec.mac),
         "supports_linux": float(spec.linux),
-        "is_free": float(spec.price_status != "Paid" or spec.price <= 0),
     }
+    if price is not None:
+        values["is_free"] = float(price <= 0)
     if price is not None:
         values["price"] = float(price)
 
@@ -392,7 +429,8 @@ class Prediction:
     spread_high: float             # upper edge of the same span
     review_pct: float              # positive_review_percentage, 0-100
     suggested_price: float         # what the price model would charge
-    entered_price: float           # what the user typed (drives owners/review)
+    entered_price: float           # the price the other two models were given
+    price_is_suggested: bool       # True when no price was typed in
     revenue_low: float             # derived: owners range x entered price
     revenue_high: float
     drivers: dict[str, float]      # SHAP values for the owners model
@@ -403,19 +441,34 @@ class Prediction:
     def price_gap(self) -> float:
         return self.entered_price - self.suggested_price
 
-    # ---- confidence intervals -------------------------------------------
-    # `confidence_95` was measured on the held-out set as 1.96 x the standard
-    # deviation of the residuals, so it is a half-width in the target's own
-    # unit: dollars for price, percentage points for the review score. Nothing
-    # was saved for the older model sets, hence the 0.0 default and
-    # `has_margins`, which switches the interval display off rather than
-    # printing a made-up +/- 0.
+    # ---- error margins ---------------------------------------------------
+    # Two numbers were measured on the held-out set, both half-widths in the
+    # target's own unit -- dollars for price, percentage points for review:
+    #
+    #   mae            the average miss. This is what gets shown, because it is
+    #                  what "the model is off by about this much" means.
+    #   confidence_95  1.96 x the standard deviation of the same residuals. A
+    #                  genuine 95% band, but several times wider than the
+    #                  typical miss, because a handful of predictions are very
+    #                  wrong and blow up the standard deviation. Kept as
+    #                  context rather than as the headline.
+    #
+    # Nothing was saved for the older model sets, hence the 0.0 default and
+    # `has_margins`, which hides the panel instead of printing a made-up +/- 0.
     @property
     def price_margin(self) -> float:
-        return float(self.margins.get("price", {}).get("confidence_95", 0.0))
+        return float(self.margins.get("price", {}).get("mae", 0.0))
 
     @property
     def review_margin(self) -> float:
+        return float(self.margins.get("review", {}).get("mae", 0.0))
+
+    @property
+    def price_band95(self) -> float:
+        return float(self.margins.get("price", {}).get("confidence_95", 0.0))
+
+    @property
+    def review_band95(self) -> float:
         return float(self.margins.get("review", {}).get("confidence_95", 0.0))
 
     @property
@@ -429,7 +482,7 @@ class Prediction:
 
     @property
     def price_interval(self) -> tuple[float, float]:
-        """95% interval around the suggested price, floored at free."""
+        """Typical-miss band around the suggested price, floored at free."""
         return (
             max(self.suggested_price - self.price_margin, 0.0),
             self.suggested_price + self.price_margin,
@@ -437,7 +490,7 @@ class Prediction:
 
     @property
     def review_interval(self) -> tuple[float, float]:
-        """95% interval around the review score, clipped to 0-100."""
+        """Typical-miss band around the review score, clipped to 0-100."""
         return (
             max(self.review_pct - self.review_margin, 0.0),
             min(self.review_pct + self.review_margin, 100.0),
@@ -462,8 +515,14 @@ def _owners_explainer(bundle: Bundle):
     return bundle.explainers["owners"]
 
 
+# Fed a constant (app_id) or pinned to the current year (release_year), so
+# neither says anything about the configuration being scored -- and release_year
+# dominates the ranking, pushing out the features that are actually a choice.
+UNACTIONABLE = {"app_id", "release_year"}
+
+
 def _shap_for_owners(bundle: Bundle, frame: pd.DataFrame, class_index: int,
-                     top_n: int = 8) -> dict[str, float]:
+                     top_n: int = 12) -> dict[str, float]:
     """SHAP contributions for the predicted owner bucket, largest |value| first."""
     explainer = _owners_explainer(bundle)
     if explainer is None:
@@ -484,10 +543,8 @@ def _shap_for_owners(bundle: Bundle, frame: pd.DataFrame, class_index: int,
     else:
         return {}
 
-    # `app_id` is a real feature but is fed a placeholder (an unreleased game
-    # has no id), so its contribution says nothing about this configuration.
     pairs = sorted(
-        ((c, v) for c, v in zip(frame.columns, row) if c != "app_id"),
+        ((c, v) for c, v in zip(frame.columns, row) if c not in UNACTIONABLE),
         key=lambda kv: abs(kv[1]),
         reverse=True,
     )[:top_n]
@@ -496,7 +553,10 @@ def _shap_for_owners(bundle: Bundle, frame: pd.DataFrame, class_index: int,
 
 def driver_label(column: str) -> str:
     """'tag_story_rich' -> 'Story Rich (tag)', 'release_year' -> 'Release Year'."""
-    for prefix, family in (("genre_", "genre"), ("cat_", "category"), ("tag_", "tag")):
+    for prefix, family in (
+        ("genre_", "genre"), ("cat_", "category"), ("tag_", "tag"),
+        ("lang_", "language"),
+    ):
         if column.startswith(prefix):
             return f"{humanize(column[len(prefix):])} ({family})"
     return humanize(column)
@@ -510,14 +570,17 @@ def _untransform(value: float, transform: str | None) -> float:
 
 
 def predict(spec, bundle: Bundle) -> Prediction:
-    price = 0.0 if spec.price_status != "Paid" else max(float(spec.price), 0.0)
-
-    # the price model never sees `price` as an input
+    # The price model never sees `price` as an input, so it can run first --
+    # which is what makes leaving the field empty work: with no price typed in,
+    # the owners and review models are handed the price this model suggests.
     price_frame = build_frame(spec, bundle.features["price"], price=None)
     suggested = _untransform(
         bundle.models["price"].predict(price_frame)[0], bundle.transforms["price"]
     )
     suggested = max(suggested, 0.0)
+
+    entered = spec.price
+    price = suggested if entered is None else max(float(entered), 0.0)
 
     owners_frame = build_frame(spec, bundle.features["owners"], price=price)
     owners_model = bundle.models["owners"]
@@ -548,6 +611,7 @@ def predict(spec, bundle: Bundle) -> Prediction:
         review_pct=review_pct,
         suggested_price=suggested,
         entered_price=price,
+        price_is_suggested=entered is None,
         revenue_low=owners_low * price,
         # The top bucket is open-ended, so its upper edge is infinite; a free
         # release would turn that into a NaN rather than a revenue of nothing.

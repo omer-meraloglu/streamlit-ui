@@ -38,15 +38,15 @@ def render_sidebar(backends: dict) -> dict:
 
         st.divider()
         st.markdown("## Display")
-        show_intervals = st.toggle("Show confidence ranges", value=True)
+        show_intervals = st.toggle("Show error margins", value=True)
         show_drivers = st.toggle("Show drivers", value=True)
 
         st.divider()
         st.markdown("## About")
         st.caption(
             "Predictions come from three trained models: owners (classifier), "
-            "review percentage and price (regressors). Intervals are the error "
-            "margins measured on the held-out set. Revenue is derived, not "
+            "review percentage and price (regressors). Error margins are the "
+            "average miss on the held-out set. Revenue is derived, not "
             "predicted."
         )
 

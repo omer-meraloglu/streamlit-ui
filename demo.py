@@ -14,6 +14,11 @@ the models.
 features -- they only decorated the result capsule -- so the form no longer
 asks for them. `release_date` stays because `release_year` IS a feature, but it
 is no longer editable either: it defaults to the current year.
+
+`price` is optional. Left as None it means "no price decided yet": the price
+model runs first and its own suggestion is what the owners and review models
+are scored against. `price_status` is gone -- the form only ever offered
+"Paid", and no model in either set was fitted on `is_free` anyway.
 """
 
 from __future__ import annotations
@@ -28,8 +33,8 @@ class GameSpec:
 
     # Not user-editable: feeds the `release_year` feature.
     release_date: date = field(default_factory=date.today)
-    price: float = 19.99
-    price_status: str = "Paid"
+    # None = no price entered; the price model's own suggestion is used instead.
+    price: float | None = None
 
     # Display labels (shown on the capsule)
     genres: list[str] = field(default_factory=list)

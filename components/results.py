@@ -9,8 +9,8 @@ Every value shown is a model output or is derived from one:
   revenue            derived: the owners range x the price you entered
   drivers            SHAP values for the owners model
 
-The intervals card reports the error margins measured on the held-out set when
-training, and shipped inside the bundles -- see `Prediction.price_interval` and
+The error-margins card reports the miss measured on the held-out set when
+training, shipped inside the bundles -- see `Prediction.price_interval` and
 `review_interval`. Model sets that carry no margins simply do not get the card.
 """
 
@@ -63,6 +63,9 @@ def render_results(
 ) -> None:
     label, color = review_label(prediction.review_pct)
     pct = prediction.review_pct
+    price_source = (
+        "the model's suggestion" if prediction.price_is_suggested else "your price"
+    )
 
     # ---- headline capsule: price, platforms and the picked chips ----------
     tags_html = "".join(
@@ -73,6 +76,7 @@ def render_results(
         f'<div style="font-size:24px;color:#fff">'
         f"{price_label(prediction.entered_price)}"
         f'<span style="font-size:14px;color:#8f98a0"> &nbsp;&middot;&nbsp; '
+        f"{price_source} &nbsp;&middot;&nbsp; "
         f'{", ".join(spec.platforms)}</span></div>'
         f'<div style="margin-top:9px">{tags_html}</div></div>',
         unsafe_allow_html=True,
@@ -106,7 +110,7 @@ def render_results(
             _tile(
                 "revenue",
                 range_label(prediction.revenue_low, prediction.revenue_high, money),
-                "owner range × your price",
+                f"owner range × {price_source}",
                 tone="green",
                 compact=True,
             ),
@@ -116,7 +120,7 @@ def render_results(
         review_sub = label
         if settings["show_intervals"] and prediction.review_margin:
             low, high = prediction.review_interval
-            review_sub = f"{label} · {low:.0f}–{high:.0f}%"
+            review_sub = f"{label} · typically {low:.0f}–{high:.0f}%"
         st.markdown(
             _tile("review score", f"{pct:.0f}%", review_sub, tone="gold"),
             unsafe_allow_html=True,
@@ -126,7 +130,7 @@ def render_results(
     with bottom[0]:
         price_sub = "what the price model would charge"
         if settings["show_intervals"] and prediction.price_margin:
-            price_sub = f"±${prediction.price_margin:,.2f} at 95%"
+            price_sub = f"typically ±${prediction.price_margin:,.2f}"
         st.markdown(
             _tile(
                 "suggested price",
@@ -137,15 +141,18 @@ def render_results(
         )
     with bottom[1]:
         gap = prediction.price_gap
-        st.markdown(
-            _tile(
+        if prediction.price_is_suggested:
+            # Nothing was typed in, so there is no gap to report -- the entered
+            # price IS the suggestion and the difference is always zero.
+            gap_tile = _tile("price gap", "—", "no price entered")
+        else:
+            gap_tile = _tile(
                 "price gap",
                 f"{gap:+,.2f}",
                 "above suggested" if gap >= 0 else "below suggested",
                 tone="green" if abs(gap) < 2 else "",
-            ),
-            unsafe_allow_html=True,
-        )
+            )
+        st.markdown(gap_tile, unsafe_allow_html=True)
     with bottom[2]:
         conf_sub = "on the owners bucket"
         average = prediction.owners_mean_confidence
@@ -190,7 +197,8 @@ def render_results(
             st.altair_chart(_driver_chart(prediction.drivers))
             st.caption(
                 f"SHAP values for the owners model ({prediction.backend}) on the "
-                "predicted bucket — log-odds, not owners."
+                "predicted bucket — log-odds, not owners. release_year and "
+                "app_id are left out: neither is a choice you make."
             )
         else:
             st.caption("No SHAP explainer available for this model set.")
@@ -210,10 +218,11 @@ def _render_intervals(prediction: Prediction) -> None:
     """The three predictions, each with the error margin it was trained with.
 
     The two regressors ship `mae` / `std` / `confidence_95` measured on the
-    held-out set, so their intervals are the point estimate ± 1.96σ. The owners
-    model is a classifier, so there is no residual to take a σ of: its interval
-    is the band of buckets holding the middle 80% of the predicted probability,
-    and the margin reported for it is how confident it was on average.
+    held-out set. The band shown is the point estimate ± MAE -- the average
+    miss -- with the far wider 95% band (1.96σ of the same residuals) reported
+    beside it rather than as the headline. The owners model is a classifier, so
+    there is no residual to take a σ of: its band is the set of buckets holding
+    the middle 80% of the predicted probability.
     """
     rows = []
 
@@ -222,8 +231,8 @@ def _render_intervals(prediction: Prediction) -> None:
         rows.append(_interval_row(
             "estimated_owners",
             range_label(prediction.spread_low, prediction.spread_high),
-            f"80% probability mass · {prediction.owners_confidence:.0%} on the "
-            f"picked bucket, average {owners.get('mean_confidence', 0):.0%}",
+            f"{prediction.owners_confidence:.0%} on the picked bucket · "
+            f"{owners.get('mean_confidence', 0):.0%} average when trained",
         ))
 
     review = prediction.margins.get("review", {})
@@ -232,8 +241,8 @@ def _render_intervals(prediction: Prediction) -> None:
         rows.append(_interval_row(
             "review score",
             f"{low:.1f}–{high:.1f}%",
-            f"±{prediction.review_margin:.1f} pts at 95% · "
-            f"MAE {review.get('mae', 0):.1f} pts",
+            f"±{prediction.review_margin:.1f} pts typical · "
+            f"95% band ±{prediction.review_band95:.1f}",
         ))
 
     price = prediction.margins.get("price", {})
@@ -244,8 +253,8 @@ def _render_intervals(prediction: Prediction) -> None:
             # not price_label(): a lower edge clipped to 0 is the bottom of an
             # interval, not a free-to-play release
             f"${low:,.2f}–${high:,.2f}",
-            f"±${prediction.price_margin:,.2f} at 95% · "
-            f"MAE ${price.get('mae', 0):,.2f}",
+            f"±${prediction.price_margin:,.2f} typical · "
+            f"95% band ±${prediction.price_band95:,.2f}",
         ))
 
     if not rows:
@@ -253,10 +262,12 @@ def _render_intervals(prediction: Prediction) -> None:
 
     st.markdown(
         '<div class="steam-card">'
-        '<div class="card-title">Confidence intervals — 95%</div>'
+        '<div class="card-title">Error margins</div>'
         + "".join(rows)
-        + '<div class="interval-note">Margins measured on the held-out set '
-          f"when {prediction.backend} was trained, not on this configuration.</div>"
+        + '<div class="interval-note">The band is the average miss (MAE) on the '
+          f"held-out set when {prediction.backend} was trained, not an error "
+          "computed for this configuration. The 95% band is wider because a "
+          "few predictions miss badly.</div>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -298,5 +309,7 @@ def _driver_chart(drivers: dict[str, float]) -> alt.Chart:
                 alt.Tooltip("impact:Q", title="SHAP", format="+.3f"),
             ],
         )
-        .properties(height=175, width="container")
+        # ~28px a band: at 12 drivers anything tighter makes Altair drop every
+        # other axis label.
+        .properties(height=340, width="container")
     )

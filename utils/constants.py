@@ -34,7 +34,3 @@ SENTIMENT_COLORS = {
 
 # Three BOOLEAN feature columns: supports_windows / mac / linux.
 PLATFORMS = ["Windows", "Mac", "Linux"]
-
-# Paid only. Free / Free To Play were dropped from the form, so `is_free` is
-# always 0 -- the models are used for priced releases.
-PRICE_STATUS = ["Paid"]

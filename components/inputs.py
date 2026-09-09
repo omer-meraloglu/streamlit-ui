@@ -7,8 +7,11 @@ something the model never saw is not possible.
 
 Dropped on purpose: name, developers and publishers were never features, only
 capsule decoration. release_date is gone too, so `release_year` is pinned to the
-current year -- see GameSpec. price_status is Paid-only, which fixes `is_free`
-at 0.
+current year -- see GameSpec. price_status offered nothing but "Paid", so it is
+gone as well.
+
+price is the one optional field: left empty it means the price has not been
+decided, and the price model's own suggestion is scored instead.
 
 Post-launch columns (estimated_owners_avg, positive_review_percentage) are
 targets and deliberately absent.
@@ -22,7 +25,7 @@ from __future__ import annotations
 import streamlit as st
 
 from demo import GameSpec
-from utils.constants import PLATFORMS, PRICE_STATUS
+from utils.constants import PLATFORMS
 
 DEFAULT_GENRES = ["Action", "Indie"]
 DEFAULT_CATEGORIES = ["Single-player", "Steam Achievements"]
@@ -50,14 +53,16 @@ def render_feature_form(bundle) -> GameSpec | None:
     with st.form("game_spec", border=False):
         with st.container(border=True):
             _section_title("Pricing & platforms")
-            col1, col2, col3 = st.columns([1, 1, 1.6])
+            col1, col2 = st.columns([1.7, 1.3])
             with col1:
+                # value=None leaves the box empty and returns None, which is
+                # what GameSpec reads as "no price decided yet".
                 price = st.number_input(
-                    "price", min_value=0.0, max_value=200.0, value=19.99, step=1.0
+                    "price — leave empty for the model's own suggestion",
+                    min_value=0.0, max_value=200.0, value=None, step=1.0,
+                    placeholder="let the model price it",
                 )
             with col2:
-                price_status = st.selectbox("price_status", PRICE_STATUS, index=0)
-            with col3:
                 platforms = st.multiselect(
                     "windows / mac / linux", PLATFORMS, default=["Windows"]
                 )
@@ -125,8 +130,7 @@ def render_feature_form(bundle) -> GameSpec | None:
         return None
 
     return GameSpec(
-        price=float(price),
-        price_status=price_status,
+        price=None if price is None else float(price),
         genres=genres,
         categories=categories,
         tags=tags,

@@ -10,8 +10,24 @@ Each set ships as three bundles. `bundle_<target>.pkl` is a dict carrying the
 fitted estimator, its `selected_features`, the `target_transform` applied while
 training and the `error_margins` measured on the held-out set -- so a
 prediction can be reported with its error margin instead of as a bare number.
-The XGBoost owners bundle also carries the `label_encoder` and `classes` that
-name its integer classes; the LightGBM one was fitted on the names directly.
+
+The two sets do not predict owners and reviews the same way, so each target is
+read in whichever of three modes its own bundle describes (see `_mode`):
+
+  value    a number in its own unit -- price, in dollars once the transform is
+           undone. Error margins are `mae` / `confidence_95`.
+  classes  a classifier over named buckets. `predict_proba` gives the bucket
+           and the confidence; the names come from `classes` / `label_encoder`,
+           or from `classes_` when the model was fitted on them directly.
+  ordinal  a regressor over a band *index* -- 0.0 is the bottom band, and the
+           value lands between bands as often as on one. Recognised by
+           `mean_continuous_pred` in the margins, which is where a bundle in
+           this mode reports the spread of its predictions instead of an error.
+
+The band names are not in an ordinal bundle, so BAND_NAMES below supplies
+them. Owners reuses the buckets its own classifier was trained on; the review
+names are the assumption, and the one place to correct if the training script
+banded reviews differently.
 
 Each model was fitted on its *own* selected feature subset, so every model gets
 a frame built to its own feature list, in its own order -- XGBoost raises on a
@@ -37,13 +53,15 @@ import pandas as pd
 # --------------------------------------------------------------------------
 APP_DIR = Path(__file__).resolve().parent.parent
 
-# The training project, checked out next to this one -- the local-dev case, and
-# still what is searched first so a fresh training run keeps winning.
-SIBLING_ROOT = APP_DIR.parent / "Steam-Price-Popularity-Predictor" / "ml_models"
-
-# Fallback: .pkl files uploaded by hand into this repo, which is how the
-# deployed app gets its models -- there is no sibling checkout in the cloud.
+# Bundles copied into this repo. Searched FIRST: these are the ones that get
+# deployed, and the ones that get replaced by hand when a new training run is
+# handed over -- a stale sibling checkout silently shadowing them is how the
+# app ends up scoring with last week's models while looking up to date.
 LOCAL_ROOT = APP_DIR / "models"
+
+# The training project, checked out next to this one. Only reached for a set
+# this repo does not carry, so a fresh run there still shows up on its own.
+SIBLING_ROOT = APP_DIR.parent / "Steam-Price-Popularity-Predictor" / "ml_models"
 
 TARGETS = ("price", "owners", "review")
 
@@ -62,14 +80,32 @@ BACKENDS = {
 # the truth than 0, which would sit the prediction next to the 2003 catalogue.
 DEFAULT_APP_ID = 3_000_000.0
 
+# Names for the bands an `ordinal` target indexes, lowest first. An ordinal
+# bundle ships the index and nothing to decode it with, so these are supplied
+# here.
+#
+# `owners` repeats the buckets the classifier version of the same model was
+# trained on, and the numbers below are what the app reports as an owner range.
+# `review` is the assumed banding -- the model output is verifiably a 0-based
+# index (its predictions floor at ~0 and the two targets behave identically),
+# but nothing in the bundle names the bands. Correct this list if the training
+# script split reviews another way; nothing else needs to change.
+BAND_NAMES = {
+    "owners": ["0-20k", "20k-50k", "50k-200k", "200k-1M", "1M+"],
+    "review": [
+        "Mostly Negative", "Mixed", "Mostly Positive",
+        "Very Positive", "Overwhelmingly Positive",
+    ],
+}
+
 def search_roots() -> list[Path]:
     """Directories to search, highest priority first."""
     roots = []
     override = os.environ.get("STEAMCAST_MODEL_ROOT")
     if override:
         roots.append(Path(override))
-    roots.append(SIBLING_ROOT)
     roots.append(LOCAL_ROOT)
+    roots.append(SIBLING_ROOT)
     return roots
 
 
@@ -84,8 +120,8 @@ def available_backends() -> dict[str, Path]:
     """Backends holding a complete set of models, nearest root winning.
 
     Each root is checked for every folder name a set can go by. A label found
-    in an earlier root is never overwritten by a later one, so the sibling
-    checkout takes precedence over anything uploaded into this repo.
+    in an earlier root is never overwritten by a later one, so what this repo
+    carries takes precedence over the sibling checkout.
     """
     found: dict[str, Path] = {}
     for root in search_roots():
@@ -144,8 +180,10 @@ class Bundle:
     features: dict[str, list[str]]
     transforms: dict[str, str | None]   # target -> transform applied in training
     margins: dict[str, dict]            # target -> held-out error stats ({} if none)
+    modes: dict[str, str]               # target -> "value" | "classes" | "ordinal"
     owner_labels: list[str]             # bucket names, smallest first
     owner_bounds: list                  # (low, high) owners, aligned with the above
+    review_bands: list[str]             # review band names, worst first ([] unless ordinal)
     class_order: np.ndarray             # model class index for each entry above
     explainers: dict
     genres: dict[str, str]
@@ -216,8 +254,9 @@ def _explainers(directory: Path, features: dict[str, list[str]]) -> dict:
     return found
 
 
-def _assemble(label, directory, models, features, transforms, margins,
-              owner_labels, owner_bounds, class_order, explainers) -> Bundle:
+def _assemble(label, directory, models, features, transforms, margins, modes,
+              owner_labels, owner_bounds, review_bands, class_order,
+              explainers) -> Bundle:
     union = sorted(set().union(*features.values()))
     return Bundle(
         label=label,
@@ -226,8 +265,10 @@ def _assemble(label, directory, models, features, transforms, margins,
         features=features,
         transforms=transforms,
         margins=margins,
+        modes=modes,
         owner_labels=owner_labels,
         owner_bounds=owner_bounds,
+        review_bands=review_bands,
         class_order=class_order,
         explainers=explainers,
         genres=_vocab(union, "genre_"),
@@ -235,6 +276,15 @@ def _assemble(label, directory, models, features, transforms, margins,
         tags=_vocab(union, "tag_"),
         languages=_vocab(union, "lang_"),
     )
+
+
+def _mode(target: str, saved: dict, model) -> str:
+    """Which of the three target shapes this bundle holds -- see the module docstring."""
+    if "mean_continuous_pred" in (saved.get("error_margins") or {}):
+        return "ordinal"
+    if hasattr(model, "predict_proba") and getattr(model, "classes_", None) is not None:
+        return "classes"
+    return "value"
 
 
 def _owner_names(saved: dict, model) -> list[str]:
@@ -255,7 +305,7 @@ def _owner_names(saved: dict, model) -> list[str]:
 
 def _load_bundled(label: str, directory: Path) -> Bundle:
     """One self-describing pickle per target."""
-    models, features, transforms, margins = {}, {}, {}, {}
+    models, features, transforms, margins, modes = {}, {}, {}, {}, {}
     owners_saved = None
     for target in TARGETS:
         saved = joblib.load(directory / f"bundle_{target}.pkl")
@@ -263,19 +313,27 @@ def _load_bundled(label: str, directory: Path) -> Bundle:
         features[target] = list(saved["selected_features"])
         transforms[target] = saved.get("target_transform")
         margins[target] = dict(saved.get("error_margins") or {})
+        modes[target] = _mode(target, saved, saved["model"])
         if target == "owners":
             owners_saved = saved
 
-    # Whichever way the names arrive, they are in the encoder's lexical order
-    # -- '1M+' lands second. Sort by lower edge so the display is by size.
-    names = _owner_names(owners_saved, models["owners"])
-    bounds = [_owner_range(n) for n in names]
-    order = np.argsort([low for low, _ in bounds])
+    if modes["owners"] == "ordinal":
+        # An ordinal bundle indexes the bands and ships no names for them, so
+        # they are already in size order and each class is its own index.
+        names = list(BAND_NAMES["owners"])
+        order = np.arange(len(names))
+    else:
+        # Whichever way the names arrive, they are in the encoder's lexical
+        # order -- '1M+' lands second. Sort by lower edge to display by size.
+        names = _owner_names(owners_saved, models["owners"])
+        order = np.argsort([low for low, _ in (_owner_range(n) for n in names)])
+        names = [names[i] for i in order]
 
     return _assemble(
-        label, directory, models, features, transforms, margins,
-        owner_labels=[names[i] for i in order],
-        owner_bounds=[bounds[i] for i in order],
+        label, directory, models, features, transforms, margins, modes,
+        owner_labels=names,
+        owner_bounds=[_owner_range(n) for n in names],
+        review_bands=list(BAND_NAMES["review"]) if modes["review"] == "ordinal" else [],
         class_order=order,
         explainers=_explainers(directory, features),
     )
@@ -328,10 +386,16 @@ class Prediction:
 
     owners_low: float              # predicted bucket's lower edge
     owners_high: float             # predicted bucket's upper edge
-    owners_confidence: float       # probability mass on that bucket
+    owners_confidence: float | None    # probability on that bucket (classifier only)
+    owners_index: float | None         # raw ordinal band index (regressor only)
     spread_low: float              # lower edge spanning the middle 80% of mass
     spread_high: float             # upper edge of the same span
-    review_pct: float              # positive_review_percentage, 0-100
+    # Exactly one of these carries the review prediction, depending on the
+    # bundle's mode: a percentage, or a band index with the band it rounds to.
+    review_pct: float | None       # positive_review_percentage, 0-100
+    review_index: float | None     # raw ordinal band index, 0.0 = bottom band
+    review_band: str | None        # the band `review_index` rounds to
+    review_bands: list[str]        # every band name, worst first
     suggested_price: float         # what the price model would charge
     entered_price: float           # the price the other two models were given
     price_is_suggested: bool       # True when no price was typed in
@@ -374,6 +438,18 @@ class Prediction:
     @property
     def review_band95(self) -> float:
         return float(self.margins.get("review", {}).get("confidence_95", 0.0))
+
+    # An `ordinal` bundle carries no error at all -- `std_continuous_pred` is
+    # how widely the model's predictions were spread over the held-out set, in
+    # band units. Useful context, but it is not a miss and is not labelled as
+    # one; the band range shown comes from the prediction itself instead.
+    @property
+    def owners_spread(self) -> float:
+        return float(self.margins.get("owners", {}).get("std_continuous_pred", 0.0))
+
+    @property
+    def review_spread(self) -> float:
+        return float(self.margins.get("review", {}).get("std_continuous_pred", 0.0))
 
     @property
     def owners_mean_confidence(self) -> float:
@@ -475,6 +551,21 @@ def driver_label(column: str) -> str:
     return humanize(column)
 
 
+def _band(value: float, count: int) -> tuple[int, int, int]:
+    """An ordinal prediction as (nearest band, band below, band above).
+
+    A value of 1.4 is the model saying "band 1, leaning 2" -- the pair either
+    side of it is the honest range, and it is derived from the prediction
+    itself rather than from an error statistic the bundle does not carry.
+    """
+    value = float(np.clip(value, 0.0, count - 1))
+    return (
+        int(round(value)),
+        int(np.floor(value)),
+        int(np.ceil(value)),
+    )
+
+
 def _untransform(value: float, transform: str | None) -> float:
     """Undo the transform the target was trained on."""
     if transform == "log1p":
@@ -497,31 +588,53 @@ def predict(spec, bundle: Bundle) -> Prediction:
 
     owners_frame = build_frame(spec, bundle.features["owners"], price=price)
     owners_model = bundle.models["owners"]
-    proba = owners_model.predict_proba(owners_frame)[0][bundle.class_order]
-    best = int(np.argmax(proba))
-
-    cumulative = np.cumsum(proba)
     last = len(bundle.owner_bounds) - 1
-    lo_idx = min(int(np.searchsorted(cumulative, 0.10)), last)
-    hi_idx = min(int(np.searchsorted(cumulative, 0.90)), last)
+
+    if bundle.modes["owners"] == "ordinal":
+        # A band index. There is no per-class probability to rank, so the SHAP
+        # call below takes the regressor's single output rather than a slice,
+        # and the range shown is the pair of bands the value falls between.
+        owners_index = float(owners_model.predict(owners_frame)[0])
+        best, lo_idx, hi_idx = _band(owners_index, last + 1)
+        proba = None
+        shap_class = None
+    else:
+        owners_index = None
+        proba = owners_model.predict_proba(owners_frame)[0][bundle.class_order]
+        best = int(np.argmax(proba))
+        cumulative = np.cumsum(proba)
+        lo_idx = min(int(np.searchsorted(cumulative, 0.10)), last)
+        hi_idx = min(int(np.searchsorted(cumulative, 0.90)), last)
+        shap_class = int(bundle.class_order[best])
 
     review_frame = build_frame(spec, bundle.features["review"], price=price)
-    review_pct = float(np.clip(
-        _untransform(
-            bundle.models["review"].predict(review_frame)[0],
-            bundle.transforms["review"],
-        ),
-        0, 100,
-    ))
+    review_raw = _untransform(
+        bundle.models["review"].predict(review_frame)[0],
+        bundle.transforms["review"],
+    )
+    if bundle.modes["review"] == "ordinal":
+        review_pct = None
+        review_index = float(review_raw)
+        review_band = bundle.review_bands[
+            _band(review_index, len(bundle.review_bands))[0]
+        ]
+    else:
+        review_pct = float(np.clip(review_raw, 0, 100))
+        review_index = None
+        review_band = None
 
     owners_low, owners_high = bundle.owner_bounds[best]
     return Prediction(
         owners_low=owners_low,
         owners_high=owners_high,
-        owners_confidence=float(proba[best]),
+        owners_confidence=None if proba is None else float(proba[best]),
+        owners_index=owners_index,
         spread_low=bundle.owner_bounds[lo_idx][0],
         spread_high=bundle.owner_bounds[hi_idx][1],
         review_pct=review_pct,
+        review_index=review_index,
+        review_band=review_band,
+        review_bands=list(bundle.review_bands),
         suggested_price=suggested,
         entered_price=price,
         price_is_suggested=entered is None,
@@ -530,9 +643,7 @@ def predict(spec, bundle: Bundle) -> Prediction:
         # release would turn that into a NaN rather than a revenue of nothing.
         revenue_high=owners_high * price if price > 0 else 0.0,
         drivers={
-            "owners": _shap_drivers(
-                bundle, "owners", owners_frame, int(bundle.class_order[best])
-            ),
+            "owners": _shap_drivers(bundle, "owners", owners_frame, shap_class),
             "review": _shap_drivers(bundle, "review", review_frame),
             "price": _shap_drivers(bundle, "price", price_frame),
         },

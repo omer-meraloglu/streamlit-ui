@@ -2,8 +2,8 @@
 
 Every value shown is a model output or is derived from one:
 
-  estimated_owners   owners model  (classifier -> the bucket's own range)
-  review score       review model  (regressor, positive_review_percentage)
+  estimated_owners   owners model  (a bucket, or the band an index rounds to)
+  review score       review model  (a percentage, or a predicted band)
   suggested price    price model   (regressor on log1p(price), inverted)
   confidence         owners model  predict_proba on the chosen bucket
   revenue            derived: the owners range x the price you entered
@@ -12,6 +12,13 @@ Every value shown is a model output or is derived from one:
 The error-margins card reports the miss measured on the held-out set when
 training, shipped inside the bundles -- see `Prediction.price_interval` and
 `review_interval`. Model sets that carry no margins simply do not get the card.
+
+A model set predicts owners and reviews in one of two shapes (see
+`utils.model_backend`), and both are rendered here: a classifier's bucket plus
+its probability, or an ordinal band index plus the two bands it falls between.
+The percentage badge and the 0-100 bar only appear for a set that predicts a
+percentage; an ordinal set gets its band and the position of that band on the
+scale instead.
 """
 
 from __future__ import annotations
@@ -41,16 +48,31 @@ DRIVER_MODELS = {
     "review score": "review",
     "suggested price": "price",
 }
-DRIVER_AXIS = {
-    "owners": "SHAP impact on the predicted owners bucket",
-    "review": "SHAP impact on review score",
-    "price": "SHAP impact on log1p(price)",
-}
-DRIVER_UNIT = {
-    "owners": "log-odds on the predicted bucket, not owners",
-    "review": "percentage points of positive reviews",
-    "price": "on log1p(price), not dollars",
-}
+# Axis title and unit per target. Both depend on the shape the loaded set
+# predicts in, not just on which model is being explained: a classifier's SHAP
+# values are log-odds, an ordinal regressor's are band index.
+def _driver_axis(target: str, prediction: Prediction) -> str:
+    if target == "owners":
+        if prediction.owners_confidence is None:
+            return "SHAP impact on the owners band index"
+        return "SHAP impact on the predicted owners bucket"
+    if target == "review":
+        if prediction.review_pct is None:
+            return "SHAP impact on the review band index"
+        return "SHAP impact on review score"
+    return "SHAP impact on log1p(price)"
+
+
+def _driver_unit(target: str, prediction: Prediction) -> str:
+    if target == "owners":
+        if prediction.owners_confidence is None:
+            return "band index, not a number of owners"
+        return "log-odds on the predicted bucket, not owners"
+    if target == "review":
+        if prediction.review_pct is None:
+            return "band index, not a percentage"
+        return "percentage points of positive reviews"
+    return "on log1p(price), not dollars"
 
 
 def _tile(
@@ -83,8 +105,18 @@ def render_empty_state() -> None:
 def render_results(
     prediction: Prediction, spec: GameSpec, settings: dict
 ) -> None:
-    label, color = review_label(prediction.review_pct)
-    pct = prediction.review_pct
+    ordinal_review = prediction.review_pct is None
+    if ordinal_review:
+        bands = prediction.review_bands
+        label = prediction.review_band or "—"
+        # Position on the band scale, so the bar and the colour still mean
+        # something without a percentage behind them.
+        pct = 100.0 * prediction.review_index / max(len(bands) - 1, 1)
+        color = review_label(pct)[1]
+    else:
+        label, color = review_label(prediction.review_pct)
+        pct = prediction.review_pct
+
     price_source = (
         "the model's suggestion" if prediction.price_is_suggested else "your price"
     )
@@ -112,13 +144,18 @@ def render_results(
         prediction.spread_low < prediction.owners_low
         or prediction.spread_high > prediction.owners_high
     )
-    if settings["show_intervals"] and wider:
+    if not settings["show_intervals"] or not wider:
+        owners_sub = "predicted owner range"
+    elif prediction.owners_confidence is None:
+        owners_sub = (
+            "falls between "
+            f"{range_label(prediction.spread_low, prediction.spread_high)}"
+        )
+    else:
         owners_sub = (
             "80% of mass: "
             f"{range_label(prediction.spread_low, prediction.spread_high)}"
         )
-    else:
-        owners_sub = "predicted owner range"
 
     # 3 per row x 2 rows, so the six values fit without scrolling.
     top = st.columns(3)
@@ -139,14 +176,25 @@ def render_results(
             unsafe_allow_html=True,
         )
     with top[2]:
-        review_sub = label
-        if settings["show_intervals"] and prediction.review_margin:
-            low, high = prediction.review_interval
-            review_sub = f"{label} · typically {low:.0f}–{high:.0f}%"
-        st.markdown(
-            _tile("review score", f"{pct:.0f}%", review_sub, tone="gold"),
-            unsafe_allow_html=True,
-        )
+        if ordinal_review:
+            top_band = len(prediction.review_bands) - 1
+            st.markdown(
+                _tile(
+                    "review score", label,
+                    f"band {prediction.review_index:.1f} of {top_band}",
+                    tone="gold", compact=True,
+                ),
+                unsafe_allow_html=True,
+            )
+        else:
+            review_sub = label
+            if settings["show_intervals"] and prediction.review_margin:
+                low, high = prediction.review_interval
+                review_sub = f"{label} · typically {low:.0f}–{high:.0f}%"
+            st.markdown(
+                _tile("review score", f"{pct:.0f}%", review_sub, tone="gold"),
+                unsafe_allow_html=True,
+            )
 
     bottom = st.columns(3)
     with bottom[0]:
@@ -176,18 +224,27 @@ def render_results(
             )
         st.markdown(gap_tile, unsafe_allow_html=True)
     with bottom[2]:
-        conf_sub = "on the owners bucket"
-        average = prediction.owners_mean_confidence
-        if average:
-            conf_sub = f"on the owners bucket · {average:.0%} average"
-        st.markdown(
-            _tile(
-                "confidence",
-                f"{prediction.owners_confidence:.0%}",
-                conf_sub,
-            ),
-            unsafe_allow_html=True,
-        )
+        if prediction.owners_confidence is None:
+            # A regressor over band indexes has no per-bucket probability;
+            # the index itself is the closest thing to report.
+            top_band = len(prediction.review_bands or [0] * 5) - 1
+            st.markdown(
+                _tile(
+                    "owners band",
+                    f"{prediction.owners_index:.2f}",
+                    f"ordinal index, 0–{top_band}",
+                ),
+                unsafe_allow_html=True,
+            )
+        else:
+            conf_sub = "on the owners bucket"
+            average = prediction.owners_mean_confidence
+            if average:
+                conf_sub = f"on the owners bucket · {average:.0%} average"
+            st.markdown(
+                _tile("confidence", f"{prediction.owners_confidence:.0%}", conf_sub),
+                unsafe_allow_html=True,
+            )
 
     if settings["show_intervals"] and prediction.has_margins:
         _render_intervals(prediction)
@@ -195,13 +252,23 @@ def render_results(
     # ---- review summary, styled like the store ----------------------------
     # Review *counts* are not a trained target, so the badge reports the
     # predicted percentage rather than a positive / negative split.
+    if ordinal_review:
+        meta = (
+            f"band {prediction.review_index:.2f} of "
+            f"{len(prediction.review_bands) - 1} &nbsp;&middot;&nbsp; "
+            "predicted by the review model"
+        )
+    else:
+        meta = (
+            f"{pct:.1f}% positive &nbsp;&middot;&nbsp; "
+            "predicted by the review model"
+        )
     st.markdown(
         f'<div class="steam-card">'
         f'<div class="card-title">Expected review summary</div>'
         f'<div class="sentiment-row">'
         f'<span class="sentiment-badge" style="color:{color}">{label}</span>'
-        f'<span class="sentiment-meta">{pct:.1f}% positive &nbsp;&middot;&nbsp; '
-        f"predicted by the review model</span>"
+        f'<span class="sentiment-meta">{meta}</span>'
         f"</div>"
         f'<div class="score-bar"><div style="width:{pct:.1f}%;'
         f'background:{color}"></div></div>'
@@ -228,11 +295,13 @@ def render_results(
         drivers = prediction.drivers.get(target, {})
 
         if drivers:
-            st.altair_chart(_driver_chart(drivers, DRIVER_AXIS[target]))
+            st.altair_chart(
+                _driver_chart(drivers, _driver_axis(target, prediction))
+            )
             st.caption(
                 f"SHAP values for the {target} model ({prediction.backend}) — "
-                f"{DRIVER_UNIT[target]}. release_year and app_id are left out: "
-                "neither is a choice you make."
+                f"{_driver_unit(target, prediction)}. release_year and app_id "
+                "are left out: neither is a choice you make."
             )
         else:
             st.caption(
@@ -254,17 +323,29 @@ def _interval_row(label: str, value: str, basis: str) -> str:
 def _render_intervals(prediction: Prediction) -> None:
     """The three predictions, each with the error margin it was trained with.
 
-    The two regressors ship `mae` / `std` / `confidence_95` measured on the
-    held-out set. The band shown is the point estimate ± MAE -- the average
-    miss -- with the far wider 95% band (1.96σ of the same residuals) reported
-    beside it rather than as the headline. The owners model is a classifier, so
-    there is no residual to take a σ of: its band is the set of buckets holding
-    the middle 80% of the predicted probability.
+    What each row can honestly say depends on what its bundle measured:
+
+    * a price or percentage regressor ships `mae` / `confidence_95`, so its
+      row is the estimate ± MAE -- the average miss -- with the far wider 95%
+      band (1.96σ of the same residuals) beside it rather than as the headline.
+    * a classifier ships no residual to take a σ of, so its row is the buckets
+      holding the middle 80% of the predicted probability.
+    * an ordinal band model ships neither. Its row is the two bands the
+      prediction falls between, which comes from the prediction itself, and
+      the spread beside it is how widely that model's predictions were spread
+      when trained -- context, not an error, and said as much.
     """
-    rows = []
+    rows, notes = [], []
 
     owners = prediction.margins.get("owners", {})
-    if owners:
+    if owners and prediction.owners_confidence is None:
+        rows.append(_interval_row(
+            "estimated_owners",
+            range_label(prediction.spread_low, prediction.spread_high),
+            f"index {prediction.owners_index:.2f}, so between these two bands · "
+            f"predictions spread ±{prediction.owners_spread:.2f} bands",
+        ))
+    elif owners:
         rows.append(_interval_row(
             "estimated_owners",
             range_label(prediction.spread_low, prediction.spread_high),
@@ -273,7 +354,18 @@ def _render_intervals(prediction: Prediction) -> None:
         ))
 
     review = prediction.margins.get("review", {})
-    if review:
+    if review and prediction.review_pct is None:
+        bands = prediction.review_bands
+        index = prediction.review_index
+        low = bands[max(int(index), 0)]
+        high = bands[min(int(index) + 1, len(bands) - 1)]
+        rows.append(_interval_row(
+            "review score",
+            low if low == high else f"{low} – {high}",
+            f"index {index:.2f}, so between these two bands · "
+            f"predictions spread ±{prediction.review_spread:.2f} bands",
+        ))
+    elif review:
         low, high = prediction.review_interval
         rows.append(_interval_row(
             "review score",
@@ -297,14 +389,26 @@ def _render_intervals(prediction: Prediction) -> None:
     if not rows:
         return
 
+    # Only explain the kinds of row actually on screen -- which ones appear
+    # depends on the shapes this model set predicts in.
+    if prediction.price_margin or prediction.review_margin:
+        notes.append(
+            "A miss (MAE) was measured on the held-out set when "
+            f"{prediction.backend} was trained, not computed for this "
+            "configuration; the 95% band is wider because a few predictions "
+            "miss badly."
+        )
+    if prediction.owners_confidence is None or prediction.review_pct is None:
+        notes.append(
+            "A row quoting bands has no error to report — that model predicts "
+            "an index, and the range is the two bands the index falls between."
+        )
+
     st.markdown(
         '<div class="steam-card">'
         '<div class="card-title">Error margins</div>'
         + "".join(rows)
-        + '<div class="interval-note">The band is the average miss (MAE) on the '
-          f"held-out set when {prediction.backend} was trained, not an error "
-          "computed for this configuration. The 95% band is wider because a "
-          "few predictions miss badly.</div>"
+        + f'<div class="interval-note">{" ".join(notes)}</div>'
         "</div>",
         unsafe_allow_html=True,
     )

@@ -271,6 +271,18 @@ a { color: var(--steam-blue); }
 
 /* ---------- settings card ------------------------------------------------- */
 
+/* The submit button sits outside the form's cards, so left-aligned it hangs
+   off on its own. Pushed to the right edge instead, where it lines up with
+   the cards above it and reads as the end of the form.
+
+   The wrapper shrinks to the button's own width, so the move has to happen on
+   its element container -- a child of the form's flex column, where align-self
+   is what positions it horizontally. */
+[data-testid="stElementContainer"]:has([data-testid="stFormSubmitButton"]) {
+  align-self: flex-end;
+  margin-left: auto;
+}
+
 /* The live model directory, last line in the settings card. */
 .model-path {
   padding-bottom: 6px;

@@ -269,20 +269,18 @@ a { color: var(--steam-blue); }
   font-size: 15px;
 }
 
-/* ---------- sidebar ------------------------------------------------------- */
+/* ---------- settings card ------------------------------------------------- */
 
-[data-testid="stSidebar"] {
-  background: var(--steam-bg-dark);
-  border-right: 1px solid rgba(102, 192, 244, 0.12);
+/* The live model directory, last line in the settings card. */
+.model-path {
+  padding-bottom: 6px;
+  line-height: 1.5;
 }
 
-[data-testid="stSidebar"] h2,
-[data-testid="stSidebar"] h3 {
-  font-size: 13px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--steam-muted);
-}
+/* The model radio reads as a row of choices, not a form field: no bullet gap
+   and the same 13px as the toggles beside it. */
+[data-testid="stRadio"] label p { font-size: 13px; }
+[data-testid="stRadio"] [role="radiogroup"] { gap: 14px; }
 
 .status-dot {
   display: inline-block;

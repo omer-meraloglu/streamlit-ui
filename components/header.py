@@ -1,4 +1,8 @@
-"""Top nav bar and sidebar."""
+"""Top nav bar and the settings row.
+
+There is no sidebar: the model picker and the display toggles sit in a card
+under the input form, so the whole app is one page.
+"""
 
 from __future__ import annotations
 
@@ -20,38 +24,40 @@ def render_header() -> None:
     )
 
 
-def render_sidebar(backends: dict) -> dict:
-    """Model picker + display toggles. Returns what the result panel reads."""
-    with st.sidebar:
-        st.markdown("## Model")
-        names = list(backends)
-        backend = st.radio(
-            "trained model set", names, index=0,
-            help="All are trained by Steam-Price-Popularity-Predictor. "
-                 "LightGBM (final) is the current bundle format and the only "
-                 "set carrying error margins; the legacy sets are the earlier "
-                 "saved_models / saved_models_xgb exports.",
+def render_settings(backends: dict) -> dict:
+    """Model picker + display toggles. Returns what the result panel reads.
+
+    Rendered into a container the caller placed under the form, but read
+    before the form is drawn -- the picked model set decides which vocabulary
+    the form can offer, and Streamlit keeps a container's position regardless
+    of when it is filled.
+    """
+    with st.container(border=True):
+        st.markdown('<div class="card-title">Model &amp; display</div>',
+                    unsafe_allow_html=True)
+        col1, col2 = st.columns([1.3, 1])
+        with col1:
+            backend = st.radio(
+                "trained model set", list(backends), index=0,
+                horizontal=True, label_visibility="collapsed",
+                help="Both sets are trained by "
+                     "Steam-Price-Popularity-Predictor on the same data.",
+            )
+        with col2:
+            show_intervals = st.toggle("Show error margins", value=True)
+            show_drivers = st.toggle("Show drivers", value=True)
+
+        # Several roots can hold models; show the path so it is obvious which
+        # one is live. Written out rather than st.caption()'d: the caption
+        # element overruns the card's bottom padding and ends up sitting on
+        # the border, and it carries no class of its own to correct that.
+        st.markdown(
+            f'<div class="model-path"><code>{backends[backend]}</code></div>',
+            unsafe_allow_html=True,
         )
-        # Two roots can both hold models; show the path so it is obvious
-        # which one is live.
-        st.caption(f"`{backends[backend]}`")
 
-        st.divider()
-        st.markdown("## Display")
-        show_intervals = st.toggle("Show error margins", value=True)
-        show_drivers = st.toggle("Show drivers", value=True)
-
-        st.divider()
-        st.markdown("## About")
-        st.caption(
-            "Predictions come from three trained models: owners (classifier), "
-            "review percentage and price (regressors). Error margins are the "
-            "average miss on the held-out set. Revenue is derived, not "
-            "predicted."
-        )
-
-        return {
-            "backend": backend,
-            "show_intervals": show_intervals,
-            "show_drivers": show_drivers,
-        }
+    return {
+        "backend": backend,
+        "show_intervals": show_intervals,
+        "show_drivers": show_drivers,
+    }

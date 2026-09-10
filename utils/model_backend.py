@@ -6,15 +6,12 @@ Three models are trained by that project, one per target:
   owners  Classifier -> estimated owners bucket      (uses `price`)
   review  Regressor  -> positive_review_percentage   (uses `price`)
 
-Two on-disk layouts are supported:
-
-  bundles/    the current one. `bundle_<target>.pkl` is a dict carrying the
-              fitted estimator, its `selected_features`, the `target_transform`
-              applied while training and the `error_margins` measured on the
-              held-out set -- so a prediction can be reported with a confidence
-              interval instead of as a bare number.
-  saved_models[_xgb]/   the older one: a bare estimator per target plus
-              `label_encoder_owners.pkl`, and no error margins.
+Each set ships as three bundles. `bundle_<target>.pkl` is a dict carrying the
+fitted estimator, its `selected_features`, the `target_transform` applied while
+training and the `error_margins` measured on the held-out set -- so a
+prediction can be reported with its error margin instead of as a bare number.
+The XGBoost owners bundle also carries the `label_encoder` and `classes` that
+name its integer classes; the LightGBM one was fitted on the names directly.
 
 Each model was fitted on its *own* selected feature subset, so every model gets
 a frame built to its own feature list, in its own order -- XGBoost raises on a
@@ -48,28 +45,15 @@ SIBLING_ROOT = APP_DIR.parent / "Steam-Price-Popularity-Predictor" / "ml_models"
 # deployed app gets its models -- there is no sibling checkout in the cloud.
 LOCAL_ROOT = APP_DIR / "models"
 
-# estimated_owners_avg holds the MID-POINT of a Steam owner range ("0 - 20,000"
-# is stored as 10000). These edges reproduce the ranges, so a prediction can be
-# reported as the interval it actually is rather than a spuriously exact number.
-OWNER_BUCKET_EDGES = [
-    0, 20_000, 50_000, 100_000, 200_000, 500_000, 1_000_000, 2_000_000,
-    5_000_000, 10_000_000, 20_000_000, 50_000_000, 100_000_000, 200_000_000,
-]
-
 TARGETS = ("price", "owners", "review")
 
-# The current format: bundle_<target>.pkl, self-describing, error margins
-# included. Listed first so it is what the app opens on.
-BUNDLE_FOLDER = "bundles"
-BUNDLE_LABEL = "LightGBM (final)"
-
-# The earlier format, kept selectable so old runs stay reproducible. Keyed by
-# folder name: the training script has since started dropping bundles into
-# saved_models/ too, and a directory has to be labelled by the format it really
-# holds -- otherwise the bundles get served under the "legacy" name.
-LEGACY_LABELS = {
-    "saved_models": "LightGBM (legacy)",
-    "saved_models_xgb": "XGBoost (legacy)",
+# The two model sets, and the folder names each is written to. Two names per
+# set because the training project and this repo disagree: `2_train_models.py`
+# writes into saved_models/ and saved_models_xgb_final/, while an upload into
+# this repo lands in bundles/ and bundles_xgb/. First match wins.
+BACKENDS = {
+    "LightGBM": ("bundles", "saved_models"),
+    "XGBoost": ("bundles_xgb", "saved_models_xgb_final"),
 }
 
 # `app_id` is one of the selected features, but a game that has not shipped has
@@ -77,12 +61,6 @@ LEGACY_LABELS = {
 # today would draw one near the top of the range -- feeding that is closer to
 # the truth than 0, which would sit the prediction next to the 2003 catalogue.
 DEFAULT_APP_ID = 3_000_000.0
-
-# Label used when the .pkl files sit directly in a root rather than in a
-# saved_models/ subfolder -- the shape a manual upload usually takes. Named
-# neutrally because a flat drop does not say which library trained it.
-FLAT_LABEL = "Uploaded"
-
 
 def search_roots() -> list[Path]:
     """Directories to search, highest priority first."""
@@ -102,53 +80,24 @@ def _has_bundles(directory: Path) -> bool:
     )
 
 
-def _has_estimators(directory: Path) -> bool:
-    """Older layout: three bare estimators plus the owners encoder."""
-    if not directory.is_dir():
-        return False
-    needed = [directory / f"model_{t}.pkl" for t in TARGETS]
-    needed.append(directory / "label_encoder_owners.pkl")
-    return all(p.exists() for p in needed)
-
-
-def _is_complete(directory: Path) -> bool:
-    """A directory usable as a backend, in either layout."""
-    return _has_bundles(directory) or _has_estimators(directory)
-
-
-def _label_for(directory: Path) -> str | None:
-    """What this directory would be called, or None if it holds no model set.
-
-    Bundles win over bare estimators in the same folder: they are the newer
-    export, and they are the only one carrying error margins.
-    """
-    if _has_bundles(directory):
-        return BUNDLE_LABEL
-    if _has_estimators(directory):
-        return LEGACY_LABELS.get(directory.name, FLAT_LABEL)
-    return None
-
-
 def available_backends() -> dict[str, Path]:
     """Backends holding a complete set of models, nearest root winning.
 
-    Each root is checked for bundles/, then saved_models/ and
-    saved_models_xgb/, then for a flat drop of .pkl files in the root itself. A
-    label found in an earlier root is never overwritten by a later one, so the
-    sibling checkout takes precedence over anything uploaded into this repo.
+    Each root is checked for every folder name a set can go by. A label found
+    in an earlier root is never overwritten by a later one, so the sibling
+    checkout takes precedence over anything uploaded into this repo.
     """
     found: dict[str, Path] = {}
     for root in search_roots():
-        candidates = [root / BUNDLE_FOLDER]
-        candidates += [root / folder for folder in LEGACY_LABELS]
-        candidates.append(root)
-        for directory in candidates:
-            label = _label_for(directory)
-            if label is not None and label not in found:
-                found[label] = directory
+        for label, folders in BACKENDS.items():
+            if label in found:
+                continue
+            for folder in folders:
+                if _has_bundles(root / folder):
+                    found[label] = root / folder
+                    break
 
-    order = [BUNDLE_LABEL] + list(LEGACY_LABELS.values()) + [FLAT_LABEL]
-    return {label: found[label] for label in order if label in found}
+    return {label: found[label] for label in BACKENDS if label in found}
 
 
 # --------------------------------------------------------------------------
@@ -209,22 +158,6 @@ class Bundle:
         return set().union(*self.features.values())
 
 
-def _feature_names(model, directory: Path, target: str) -> list[str]:
-    """LightGBM exposes feature_name_, XGBoost feature_names_in_."""
-    for attr in ("feature_name_", "feature_names_in_"):
-        names = getattr(model, attr, None)
-        if names is not None and len(names):
-            return list(names)
-    booster = getattr(model, "get_booster", None)
-    if booster is not None:
-        names = booster().feature_names
-        if names:
-            return list(names)
-    # Last resort: the test frame saved alongside the model.
-    X, _ = joblib.load(directory / f"test_data_{target}.pkl")
-    return list(X.columns)
-
-
 _SUFFIXES = {"k": 1e3, "m": 1e6, "b": 1e9}
 
 
@@ -245,30 +178,9 @@ def _owner_range(label: str) -> tuple[float, float]:
     return _owner_edge(low), _owner_edge(high)
 
 
-def _owner_bounds(mids: np.ndarray) -> list[tuple[float, float]]:
-    """Mid-points -> (low, high) edges, verified against OWNER_BUCKET_EDGES.
-
-    Falls back to a degenerate range if the trained classes ever stop lining up
-    with the edges, so a schema change degrades to the old point estimate
-    instead of inventing an interval.
-    """
-    if len(mids) == len(OWNER_BUCKET_EDGES) - 1 and all(
-        abs((OWNER_BUCKET_EDGES[i] + OWNER_BUCKET_EDGES[i + 1]) / 2 - m) < 1
-        for i, m in enumerate(mids)
-    ):
-        return [
-            (float(OWNER_BUCKET_EDGES[i]), float(OWNER_BUCKET_EDGES[i + 1]))
-            for i in range(len(mids))
-        ]
-    return [(float(m), float(m)) for m in mids]
-
-
 @lru_cache(maxsize=4)
 def load_bundle(label: str) -> Bundle:
-    directory = available_backends()[label]
-    if _has_bundles(directory):
-        return _load_bundled(label, directory)
-    return _load_estimators(label, directory)
+    return _load_bundled(label, available_backends()[label])
 
 
 def _explainer_width(explainer) -> int | None:
@@ -325,19 +237,38 @@ def _assemble(label, directory, models, features, transforms, margins,
     )
 
 
+def _owner_names(saved: dict, model) -> list[str]:
+    """Bucket names in the model's own class order.
+
+    LightGBM was fitted on the names themselves, so `classes_` already holds
+    them. XGBoost needs integer classes, so its bundle was fitted on encoded
+    labels and ships the names alongside -- as `classes`, or on the
+    `label_encoder` it used. Either way index i names class i.
+    """
+    names = saved.get("classes")
+    if names is None and saved.get("label_encoder") is not None:
+        names = list(saved["label_encoder"].classes_)
+    if names is None:
+        names = list(model.classes_)
+    return [str(n) for n in names]
+
+
 def _load_bundled(label: str, directory: Path) -> Bundle:
-    """Current layout: each pickle is a dict describing its own model."""
+    """One self-describing pickle per target."""
     models, features, transforms, margins = {}, {}, {}, {}
+    owners_saved = None
     for target in TARGETS:
         saved = joblib.load(directory / f"bundle_{target}.pkl")
         models[target] = saved["model"]
         features[target] = list(saved["selected_features"])
         transforms[target] = saved.get("target_transform")
         margins[target] = dict(saved.get("error_margins") or {})
+        if target == "owners":
+            owners_saved = saved
 
-    # The classifier is fitted on the bucket names themselves ('20k-50k'), so
-    # `classes_` is in lexical order -- '1M+' lands second. Sort by lower edge.
-    names = [str(c) for c in models["owners"].classes_]
+    # Whichever way the names arrive, they are in the encoder's lexical order
+    # -- '1M+' lands second. Sort by lower edge so the display is by size.
+    names = _owner_names(owners_saved, models["owners"])
     bounds = [_owner_range(n) for n in names]
     order = np.argsort([low for low, _ in bounds])
 
@@ -345,33 +276,6 @@ def _load_bundled(label: str, directory: Path) -> Bundle:
         label, directory, models, features, transforms, margins,
         owner_labels=[names[i] for i in order],
         owner_bounds=[bounds[i] for i in order],
-        class_order=order,
-        explainers=_explainers(directory, features),
-    )
-
-
-def _load_estimators(label: str, directory: Path) -> Bundle:
-    """Older layout: bare estimators, a separate encoder, no error margins."""
-    models, features = {}, {}
-    for target in TARGETS:
-        models[target] = joblib.load(directory / f"model_{target}.pkl")
-        features[target] = _feature_names(models[target], directory, target)
-
-    encoder = joblib.load(directory / "label_encoder_owners.pkl")
-    # Classes are numeric owner mid-points stored as strings ('10000', '150000'),
-    # so LabelEncoder ordered them lexically. Sort numerically for display.
-    values = np.array([float(c) for c in encoder.classes_])
-    order = np.argsort(values)
-    bounds = _owner_bounds(values[order])
-
-    return _assemble(
-        label, directory, models, features,
-        # These models were trained with log1p(price) and untransformed targets
-        # elsewhere; nothing was saved alongside them to say so.
-        transforms={"price": "log1p", "owners": None, "review": None},
-        margins={t: {} for t in TARGETS},
-        owner_labels=[f"{low:,.0f}-{high:,.0f}" for low, high in bounds],
-        owner_bounds=bounds,
         class_order=order,
         explainers=_explainers(directory, features),
     )
@@ -433,7 +337,7 @@ class Prediction:
     price_is_suggested: bool       # True when no price was typed in
     revenue_low: float             # derived: owners range x entered price
     revenue_high: float
-    drivers: dict[str, float]      # SHAP values for the owners model
+    drivers: dict[str, dict[str, float]]   # target -> SHAP values for that model
     margins: dict[str, dict]       # held-out error stats, straight off the bundle
     backend: str
 
@@ -497,22 +401,23 @@ class Prediction:
         )
 
 
-def _owners_explainer(bundle: Bundle):
-    """The owners explainer, rebuilt from the model when no pickle shipped.
+def _explainer(bundle: Bundle, target: str):
+    """One target's explainer, rebuilt from the model when no pickle shipped.
 
     explainer_owners.pkl is 26MB -- larger than every other artefact combined --
-    so a deployment can ship the models alone and have the explainer
-    reconstructed here. shap is imported lazily: it costs ~1s and is not needed
-    when the drivers panel is switched off.
+    so a deployment can ship the models alone and have the explainers
+    reconstructed here. shap is imported lazily, and building one costs 0.4s
+    (1.8s for owners), but the Bundle is cached so that is paid once per model
+    set rather than once per prediction.
     """
-    if "owners" not in bundle.explainers:
+    if target not in bundle.explainers:
         try:
             import shap
 
-            bundle.explainers["owners"] = shap.TreeExplainer(bundle.models["owners"])
+            bundle.explainers[target] = shap.TreeExplainer(bundle.models[target])
         except Exception:
             return None
-    return bundle.explainers["owners"]
+    return bundle.explainers[target]
 
 
 # Fed a constant (app_id) or pinned to the current year (release_year), so
@@ -521,10 +426,16 @@ def _owners_explainer(bundle: Bundle):
 UNACTIONABLE = {"app_id", "release_year"}
 
 
-def _shap_for_owners(bundle: Bundle, frame: pd.DataFrame, class_index: int,
-                     top_n: int = 12) -> dict[str, float]:
-    """SHAP contributions for the predicted owner bucket, largest |value| first."""
-    explainer = _owners_explainer(bundle)
+def _shap_drivers(bundle: Bundle, target: str, frame: pd.DataFrame,
+                  class_index: int | None = None,
+                  top_n: int = 12) -> dict[str, float]:
+    """SHAP contributions for one model, largest |value| first.
+
+    The regressors give one value per feature. The owners classifier gives one
+    per feature *per class*, so `class_index` picks the predicted bucket's
+    slice -- SHAP has shipped both axis orders, hence the shape check.
+    """
+    explainer = _explainer(bundle, target)
     if explainer is None:
         return {}
     try:
@@ -534,6 +445,8 @@ def _shap_for_owners(bundle: Bundle, frame: pd.DataFrame, class_index: int,
 
     array = np.array(values)
     if array.ndim == 3:                      # (rows, features, classes) or (classes, rows, features)
+        if class_index is None:
+            return {}
         if array.shape[0] == len(frame):
             row = array[0, :, class_index]
         else:
@@ -616,7 +529,13 @@ def predict(spec, bundle: Bundle) -> Prediction:
         # The top bucket is open-ended, so its upper edge is infinite; a free
         # release would turn that into a NaN rather than a revenue of nothing.
         revenue_high=owners_high * price if price > 0 else 0.0,
-        drivers=_shap_for_owners(bundle, owners_frame, int(bundle.class_order[best])),
+        drivers={
+            "owners": _shap_drivers(
+                bundle, "owners", owners_frame, int(bundle.class_order[best])
+            ),
+            "review": _shap_drivers(bundle, "review", review_frame),
+            "price": _shap_drivers(bundle, "price", price_frame),
+        },
         margins=bundle.margins,
         backend=bundle.label,
     )

@@ -56,7 +56,7 @@ start scrolling again:
 ```
 app.py                  the page
 demo.py                 sample numbers (not a model)
-components/header.py    top nav bar, sidebar
+components/header.py    top nav bar, model & display settings
 components/inputs.py    the form
 components/results.py   tiles, review badge, chart
 utils/constants.py      palette + dropdown options

@@ -7,7 +7,7 @@ Every value shown is a model output or is derived from one:
   suggested price    price model   (regressor on log1p(price), inverted)
   confidence         owners model  predict_proba on the chosen bucket
   revenue            derived: the owners range x the price you entered
-  drivers            SHAP values for the owners model
+  drivers            SHAP values, for whichever of the three is picked
 
 The error-margins card reports the miss measured on the held-out set when
 training, shipped inside the bundles -- see `Prediction.price_interval` and
@@ -29,6 +29,28 @@ from utils.formatting import (
     review_label,
 )
 from utils.model_backend import Prediction
+
+# Which model the drivers panel explains. SHAP is computed for all three on
+# every prediction (~23ms together), so switching is just a redraw.
+#
+# The unit differs per model and has to be said out loud: the owners model is a
+# classifier, so its values are log-odds; the price model was fitted on
+# log1p(price), so its values are not dollars.
+DRIVER_MODELS = {
+    "estimated owners": "owners",
+    "review score": "review",
+    "suggested price": "price",
+}
+DRIVER_AXIS = {
+    "owners": "SHAP impact on the predicted owners bucket",
+    "review": "SHAP impact on review score",
+    "price": "SHAP impact on log1p(price)",
+}
+DRIVER_UNIT = {
+    "owners": "log-odds on the predicted bucket, not owners",
+    "review": "percentage points of positive reviews",
+    "price": "on log1p(price), not dollars",
+}
 
 
 def _tile(
@@ -193,15 +215,30 @@ def render_results(
             '<div class="card-title" style="margin-top:8px">Drivers</div>',
             unsafe_allow_html=True,
         )
-        if prediction.drivers:
-            st.altair_chart(_driver_chart(prediction.drivers))
+        # The label is collapsed: the card title above already says Drivers,
+        # and the three options name themselves.
+        choice = st.segmented_control(
+            "drivers for",
+            list(DRIVER_MODELS),
+            default="estimated owners",
+            key="drivers_model",
+            label_visibility="collapsed",
+        )
+        target = DRIVER_MODELS.get(choice or "estimated owners", "owners")
+        drivers = prediction.drivers.get(target, {})
+
+        if drivers:
+            st.altair_chart(_driver_chart(drivers, DRIVER_AXIS[target]))
             st.caption(
-                f"SHAP values for the owners model ({prediction.backend}) on the "
-                "predicted bucket — log-odds, not owners. release_year and "
-                "app_id are left out: neither is a choice you make."
+                f"SHAP values for the {target} model ({prediction.backend}) — "
+                f"{DRIVER_UNIT[target]}. release_year and app_id are left out: "
+                "neither is a choice you make."
             )
         else:
-            st.caption("No SHAP explainer available for this model set.")
+            st.caption(
+                f"No SHAP explainer available for the {target} model in this "
+                "model set."
+            )
 
 
 def _interval_row(label: str, value: str, basis: str) -> str:
@@ -273,7 +310,7 @@ def _render_intervals(prediction: Prediction) -> None:
     )
 
 
-def _driver_chart(drivers: dict[str, float]) -> alt.Chart:
+def _driver_chart(drivers: dict[str, float], axis_title: str) -> alt.Chart:
     frame = pd.DataFrame(
         {"feature": list(drivers), "impact": list(drivers.values())}
     )
@@ -287,7 +324,7 @@ def _driver_chart(drivers: dict[str, float]) -> alt.Chart:
         # bands onto one row. Let the band scale size the bars.
         .mark_bar(cornerRadiusEnd=2)
         .encode(
-            x=alt.X("impact:Q", title="SHAP impact on predicted owners bucket"),
+            x=alt.X("impact:Q", title=axis_title),
             # labelLimit: names like "Steam Trading Cards (category)" get an
             # ellipsis at Altair's 180px default once the legend eats the width.
             y=alt.Y(

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from components.header import render_header, render_sidebar
+from components.header import render_header, render_settings
 from components.inputs import render_feature_form
 from components.results import render_empty_state, render_results
 from utils.model_backend import (
@@ -26,7 +26,7 @@ st.set_page_config(
     page_title="SteamCast — Sales & Review Predictor",
     page_icon="🎮",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 inject_theme()
@@ -40,26 +40,35 @@ if not backends:
         "No trained models found. Searched, in order:\n\n"
         f"{searched}\n\n"
         "Run `2_train_models.py` in Steam-Price-Popularity-Predictor, upload the "
-        "`.pkl` files into this repo's `models/` directory, or set "
-        "`STEAMCAST_MODEL_ROOT`."
+        "`bundle_*.pkl` files into this repo's `models/bundles` or "
+        "`models/bundles_xgb` directory, or set `STEAMCAST_MODEL_ROOT`."
     )
     st.stop()
 
-settings = render_sidebar(backends)
 render_header()
-
-bundle = load_bundle(settings["backend"])
 
 form_col, result_col = st.columns([1, 1.15], gap="large")
 
+# The settings card sits under the form but has to be *read* first: the picked
+# model set decides which genres/tags the form may offer. Claiming both slots
+# up front fixes the on-screen order, then each is filled in dependency order.
 with form_col:
+    form_slot = st.container()
+    settings_slot = st.container()
+
+with settings_slot:
+    settings = render_settings(backends)
+
+bundle = load_bundle(settings["backend"])
+
+with form_slot:
     spec = render_feature_form(bundle)
     if spec is not None:
         st.session_state["spec"] = spec
 
 with result_col:
-    # Re-scored every run, so switching model set in the sidebar updates the
-    # panel without needing the form resubmitted.
+    # Re-scored every run, so switching model set updates the panel without
+    # needing the form resubmitted.
     if "spec" in st.session_state:
         render_results(
             predict(st.session_state["spec"], bundle),
